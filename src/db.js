@@ -90,4 +90,14 @@ function getRecentPublished(limit = 20) {
     .all(limit);
 }
 
-module.exports = { initDB, isPublished, markAsPublished, getRecentPublished };
+/**
+ * يُغلق الاتصال بقاعدة البيانات.
+ */
+function closeDB() {
+  if (db) {
+    db.close();
+    logger.info("🔌 DB closed");
+  }
+}
+
+module.exports = { initDB, isPublished, markAsPublished, getRecentPublished, closeDB };

@@ -8,6 +8,8 @@ on:
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,3 +37,9 @@ jobs:
           TARGET_URL: ${{ secrets.TARGET_URL }}
           MAX_ARTICLES: ${{ secrets.MAX_ARTICLES }}
           LOG_LEVEL: info
+
+      - name: Commit Database Changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update published database"
+          file_pattern: "data/published.db data/published.db-wal data/published.db-shm"

@@ -7,7 +7,7 @@ const { scrapeLatestNews }  = require("./src/scraper");
 const { generateCaption }   = require("./src/ai");
 const { publishToFacebook } = require("./src/facebook");
 // const { publishToInstagram }= require("./src/instagram");
-const { isPublished, markAsPublished, initDB } = require("./src/db");
+const { isPublished, markAsPublished, initDB, closeDB } = require("./src/db");
 const logger = require("./src/logger");
 
 // --once flag: تشغيل مرة واحدة فقط (لـ GitHub Actions)
@@ -69,6 +69,7 @@ async function runBot() {
 
   if (RUN_ONCE) {
     logger.info("✅ Run finished — GitHub Actions mode");
+    closeDB();
     process.exit(0);
   }
 
