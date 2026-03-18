@@ -1,0 +1,38 @@
+{
+  "name": "gaming-news-bot",
+  "version": "1.0.0",
+  "description": "🎮 Auto-publishes gaming news from Destructoid to Facebook & Instagram",
+  "main": "index.js",
+  "scripts": {
+    "start": "node -r dotenv/config index.js",
+    "dev": "nodemon -r dotenv/config index.js",
+    "test:scraper": "node -r dotenv/config -e \"require('./src/scraper').scrapeLatestNews().then(r => console.log(JSON.stringify(r, null, 2)))\"",
+    "test:caption": "node -r dotenv/config -e \"require('./src/ai').generateCaption({title:'Elden Ring DLC Announced',summary:'FromSoftware reveals massive expansion',link:'https://example.com'}).then(console.log)\"",
+    "status": "node -r dotenv/config -e \"const {initDB,getRecentPublished}=require('./src/db');initDB().then(()=>console.table(getRecentPublished()))\"",
+    "lint": "eslint src/ index.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "better-sqlite3": "^12.8.0",
+    "cheerio": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "form-data": "^4.0.0",
+    "node-cron": "^3.0.3",
+    "openai": "^4.52.0",
+    "winston": "^3.13.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.4"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "gaming",
+    "bot",
+    "facebook",
+    "instagram",
+    "automation"
+  ],
+  "license": "MIT"
+}
