@@ -50,7 +50,8 @@ function getFacebookError(err) {
  */
 function isTokenError(err) {
   const fbError = getFacebookError(err);
-  const TOKEN_MSG = /Error validating access token|Session has expired|Invalid OAuth access token|access token has expired/i;
+  const TOKEN_MSG =
+    /Error validating access token|Session has expired|Invalid OAuth access token|access token has expired/i;
 
   if (fbError) {
     if (fbError.code === 190) return true;
@@ -66,7 +67,7 @@ function formatFacebookError(err) {
   const fbError = getFacebookError(err);
   if (!fbError) return err?.message || String(err);
 
-  const parts = [fbError.message || "خطأ غير معروف"];
+  const parts = [fbError.message || "Unknown error"];
   if (fbError.code) parts.push(`code=${fbError.code}`);
   if (fbError.error_subcode) parts.push(`subcode=${fbError.error_subcode}`);
   return parts.join(" | ");
@@ -98,14 +99,22 @@ async function publishToFacebook({ caption, imageBuffer, imageUrl, link }) {
     // ─── Prominent alert on Token expiration (Error 190) ───
     if (isTokenError(err)) {
       const detail = formatFacebookError(err);
-      logger.error("════════════════════════════════════════════════════════════");
-      logger.error("🚨 تنبيه عاجل: صلاحية FACEBOOK_PAGE_ACCESS_TOKEN منتهية أو ملغاة!");
-      logger.error(`   التفاصيل: ${detail}`);
-      logger.error("   👉 جدّد الـ Token من Graph API Explorer ثم حدّث .env / GitHub Secrets");
-      logger.error("════════════════════════════════════════════════════════════");
+      logger.error(
+        "════════════════════════════════════════════════════════════",
+      );
+      logger.error(
+        "🚨 Urgent Alert: The FACEBOOK_PAGE_ACCESS_TOKEN has expired or has been revoked!",
+      );
+      logger.error(`   Dea: ${detail}`);
+      logger.error(
+        "   👉 Renew the token from the Graph API Explorer, then update your .env file / GitHub Secrets.",
+      );
+      logger.error(
+        "════════════════════════════════════════════════════════════",
+      );
 
       const tokenErr = new Error(
-        `Facebook access token منتهي أو غير صالح — يجب تجديده. (${detail})`,
+        `The Facebook access token has expired or is invalid — it must be renewed. (${detail})`,
       );
       tokenErr.code = "FB_TOKEN_EXPIRED";
       tokenErr.cause = err;
@@ -138,7 +147,9 @@ async function postWithPhotoBuffer({ caption, imageBuffer }) {
   });
 
   if (!data.post_id && !data.id) {
-    throw new Error(`Facebook API رد غير متوقع: ${JSON.stringify(data)}`);
+    throw new Error(
+      `Unexpected response from Facebook API: ${JSON.stringify(data)}`,
+    );
   }
 
   logger.debug(`📘 Facebook post_id: ${data.post_id || data.id}`);
@@ -152,7 +163,7 @@ async function postWithPhoto({ caption, imageUrl }) {
   const endpoint = `${BASE}/${PAGE_ID}/photos`;
 
   const payload = {
-    url: imageUrl,          // Facebook fetches the image from the URL directly
+    url: imageUrl, // Facebook fetches the image from the URL directly
     caption: caption,
     access_token: TOKEN,
     published: true,
@@ -164,7 +175,9 @@ async function postWithPhoto({ caption, imageUrl }) {
   });
 
   if (!data.post_id && !data.id) {
-    throw new Error(`Facebook API رد غير متوقع: ${JSON.stringify(data)}`);
+    throw new Error(
+      `Unexpected response from Facebook API: ${JSON.stringify(data)}`,
+    );
   }
 
   logger.debug(`📘 Facebook post_id: ${data.post_id || data.id}`);
@@ -184,7 +197,7 @@ async function postLinkOnly({ caption, link }) {
       link: link,
       access_token: TOKEN,
     },
-    { timeout: 30000 }
+    { timeout: 30000 },
   );
 
   if (!data.id) {

@@ -105,7 +105,7 @@ Return ONLY the JSON object with the "headline" and "caption" fields.`;
  */
 function parseStructured(raw) {
   const text = String(raw || "").trim();
-  if (!text) throw new Error("رد فارغ من مزوّد الـ AI");
+  if (!text) throw new Error("Empty response from the AI ​​provider");
 
   // Strip markdown fences if present
   const cleaned = text
@@ -128,7 +128,10 @@ function parseStructured(raw) {
   }
 
   // fallback: treat the text as a plain caption (first line = headline)
-  const lines = cleaned.split("\n").map((l) => l.trim()).filter(Boolean);
+  const lines = cleaned
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean);
   return {
     headline: lines[0] || "",
     caption: lines.slice(1).join("\n") || cleaned,
@@ -142,7 +145,7 @@ function parseStructured(raw) {
 
 async function callGemini({ title, summary }) {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) throw new Error("GEMINI_API_KEY غير موجود في .env");
+  if (!apiKey) throw new Error("GEMINI_API_KEY Not found in .env");
 
   const model = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -181,7 +184,7 @@ async function callGemini({ title, summary }) {
   );
 
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-  if (!text) throw new Error("Gemini: رد فارغ");
+  if (!text) throw new Error("Gemini: Empty response");
   return text;
 }
 
@@ -192,7 +195,7 @@ async function callGemini({ title, summary }) {
 
 async function callGroq({ title, summary }) {
   const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error("GROQ_API_KEY غير موجود في .env");
+  if (!apiKey) throw new Error("GROQ_API_KEY Not found in .env");
 
   const model = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 
@@ -219,7 +222,7 @@ async function callGroq({ title, summary }) {
   );
 
   const text = data.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new Error("Groq: رد فارغ");
+  if (!text) throw new Error("Groq: Empty response");
   return text;
 }
 
@@ -260,7 +263,7 @@ async function generateCaption({ title, summary, link }) {
       const result = parseStructured(raw);
 
       if (!result.headline && !result.caption) {
-        throw new Error("رد بدون headline/caption");
+        throw new Error("Reply without headline/caption");
       }
 
       logger.info(`✅ Caption ready (${provider.label})`);
@@ -285,7 +288,7 @@ async function generateCaption({ title, summary, link }) {
     }
   }
 
-  throw new Error(`فشلت جميع مزوّدي الـ AI: ${lastError?.message}`);
+  throw new Error(`All AI providers have failed: ${lastError?.message}`);
 }
 
 module.exports = { generateCaption, parseStructured };

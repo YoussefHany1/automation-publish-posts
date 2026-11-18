@@ -46,7 +46,7 @@ const TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
 async function publishToInstagram({ caption, imageUrl }) {
   if (!IG_ID || !TOKEN) {
     throw new Error(
-      "INSTAGRAM_BUSINESS_ACCOUNT_ID أو INSTAGRAM_ACCESS_TOKEN غير موجود"
+      "INSTAGRAM_BUSINESS_ACCOUNT_ID or INSTAGRAM_ACCESS_TOKEN is missing",
     );
   }
 
@@ -82,11 +82,11 @@ async function createMediaContainer({ caption, imageUrl }) {
       caption: caption,
       access_token: TOKEN,
     },
-    { timeout: 30000 }
+    { timeout: 30000 },
   );
 
   if (!data.id) {
-    throw new Error(`فشل إنشاء Container: ${JSON.stringify(data)}`);
+    throw new Error(`Failed to create container: ${JSON.stringify(data)}`);
   }
 
   return data.id;
@@ -116,7 +116,7 @@ async function waitForContainerReady(containerId, maxWaitMs = 30000) {
 
     if (data.status_code === "FINISHED") return;
     if (data.status_code === "ERROR") {
-      throw new Error("Instagram Container فشل في المعالجة");
+      throw new Error("Instagram container failed to process");
     }
   }
 
@@ -135,11 +135,11 @@ async function publishContainer(containerId) {
       creation_id: containerId,
       access_token: TOKEN,
     },
-    { timeout: 30000 }
+    { timeout: 30000 },
   );
 
   if (!data.id) {
-    throw new Error(`فشل نشر Container: ${JSON.stringify(data)}`);
+    throw new Error(`Container deployment failed: ${JSON.stringify(data)}`);
   }
 
   return data.id;

@@ -5,7 +5,13 @@ const { createCanvas, loadImage, GlobalFonts } = require("@napi-rs/canvas");
 const logger = require("./logger");
 
 // Register the Cairo font
-const FONT_PATH = path.join(__dirname, "..", "assets", "fonts", "Cairo-Bold.ttf");
+const FONT_PATH = path.join(
+  __dirname,
+  "..",
+  "assets",
+  "fonts",
+  "Cairo-Bold.ttf",
+);
 if (fs.existsSync(FONT_PATH)) {
   GlobalFonts.registerFromPath(FONT_PATH, "Cairo");
 }
@@ -120,7 +126,9 @@ async function generateNewsImage({ imageUrl, titleText }) {
       drawImageCover(ctx, bgImg, width, height);
       bgLoaded = true;
     } catch (err) {
-      logger.warn(`⚠️ فشل تحميل صورة الخبر: ${err.message}، سيتم استخدام خلفية افتراضية`);
+      logger.warn(
+        `⚠️ Failed to load the news image: ${err.message}; a default background will be used.`,
+      );
     }
   }
 
@@ -139,7 +147,7 @@ async function generateNewsImage({ imageUrl, titleText }) {
       const overlayImg = await loadImage(OVERLAY_PATH);
       ctx.drawImage(overlayImg, 0, 0, width, height);
     } catch (err) {
-      logger.error(`❌ خطأ في تحميل الـ Overlay: ${err.message}`);
+      logger.error(`❌ Error loading the overlay: ${err.message}`);
     }
   }
 
@@ -223,4 +231,3 @@ async function generateNewsImage({ imageUrl, titleText }) {
 }
 
 module.exports = { generateNewsImage };
-

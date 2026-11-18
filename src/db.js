@@ -56,7 +56,7 @@ async function initDB() {
  * @returns {boolean}
  */
 async function isPublished(url) {
-  if (!db) throw new Error("DB غير مُهيَّأة — استدعِ initDB() أولاً");
+  if (!db) throw new Error("DB is not initialized — call initDB() first");
 
   const row = db
     .prepare("SELECT id FROM published_articles WHERE url = ?")
@@ -71,17 +71,19 @@ async function isPublished(url) {
  * @param {{ title?: string, caption?: string, facebook?: boolean, instagram?: boolean }} meta
  */
 async function markAsPublished(url, meta = {}) {
-  if (!db) throw new Error("DB غير مُهيَّأة — استدعِ initDB() أولاً");
+  if (!db) throw new Error("DB is not initialized — call initDB() first");
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT OR IGNORE INTO published_articles (url, title, caption, fb_ok, ig_ok)
     VALUES (?, ?, ?, ?, ?)
-  `).run(
+  `,
+  ).run(
     url,
     meta.title || "",
     meta.caption || "",
     meta.facebook ? 1 : 0,
-    meta.instagram ? 1 : 0
+    meta.instagram ? 1 : 0,
   );
 }
 
@@ -91,7 +93,7 @@ async function markAsPublished(url, meta = {}) {
  * @returns {number}
  */
 async function getAttempts(url) {
-  if (!db) throw new Error("DB غير مُهيَّأة — استدعِ initDB() أولاً");
+  if (!db) throw new Error("DB is not initialized — call initDB() first");
 
   const row = db
     .prepare("SELECT attempts FROM article_attempts WHERE url = ?")
@@ -107,16 +109,18 @@ async function getAttempts(url) {
  * @returns {number} Number of attempts after the increment
  */
 async function recordFailure(url, error = "") {
-  if (!db) throw new Error("DB غير مُهيَّأة — استدعِ initDB() أولاً");
+  if (!db) throw new Error("DB is not initialized — call initDB() first");
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO article_attempts (url, attempts, last_error, updated_at)
     VALUES (?, 1, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(url) DO UPDATE SET
       attempts   = attempts + 1,
       last_error = excluded.last_error,
       updated_at = CURRENT_TIMESTAMP
-  `).run(url, String(error).slice(0, 500));
+  `,
+  ).run(url, String(error).slice(0, 500));
 
   const row = db
     .prepare("SELECT attempts FROM article_attempts WHERE url = ?")
@@ -130,7 +134,7 @@ async function recordFailure(url, error = "") {
  * @param {string} url
  */
 async function clearAttempts(url) {
-  if (!db) throw new Error("DB غير مُهيَّأة — استدعِ initDB() أولاً");
+  if (!db) throw new Error("DB is not initialized — call initDB() first");
   db.prepare("DELETE FROM article_attempts WHERE url = ?").run(url);
 }
 
@@ -142,7 +146,7 @@ function getRecentPublished(limit = 20) {
   if (!db) return [];
   return db
     .prepare(
-      "SELECT * FROM published_articles ORDER BY created_at DESC LIMIT ?"
+      "SELECT * FROM published_articles ORDER BY created_at DESC LIMIT ?",
     )
     .all(limit);
 }
@@ -159,11 +163,11 @@ function closeDB() {
       const result = db.pragma("wal_checkpoint(TRUNCATE)");
       logger.debug(`🧹 WAL checkpoint: ${JSON.stringify(result)}`);
     } catch (err) {
-      logger.warn(`⚠️ فشل wal_checkpoint قبل الإغلاق: ${err.message}`);
+      logger.warn(`WAL checkpoint failed before shutdown: ${err.message}`);
     }
 
     db.close();
-    logger.info("🔌 DB closed");
+    logger.info("DB closed");
   }
 }
 
