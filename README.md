@@ -1,6 +1,10 @@
 # 🎮 Gaming News Auto-Publisher Bot
 
-> يراقب موقع **Destructoid**، يُنشئ كابشن بالـ AI، وينشر تلقائيًا على **Facebook** و **Instagram**.
+> يراقب مصدر أخبار ألعاب (RSS/HTML)، يُنشئ محتوى بالـ AI لكل منصة، وينشر تلقائيًا على **Facebook** (عربي) و **Instagram** (إنجليزي).
+
+- **Facebook**: عنوان/كابشن بالعربية (أسلوب قصير ومباشر) + صورة مبرندة مولّدة محليًا.
+- **Instagram**: عنوان/كابشن بالإنجليزية (أطول، مع إيموجي/هاشتاغات مسموحة) + صورة مبرندة مولّدة محليًا ثم رفعها إلى **Cloudinary** للحصول على رابط عام (متطلب Instagram Graph API).
+- **إعادة المحاولة لكل منصة**: إذا نجح النشر على منصة وفشل على الأخرى، يحتفظ البوت بالحالة ويعيد محاولة المنصة الفاشلة فقط في الدورات التالية.
 
 ---
 
@@ -8,15 +12,18 @@
 
 ```
 gaming-bot/
-├── index.js              ← نقطة البداية + Cron Scheduler
+├── index.js              ← نقطة البداية + Cron Scheduler + تنسيق النشر لكل منصة
 ├── .env.example          ← قالب المتغيرات البيئية
 ├── package.json
 ├── src/
-│   ├── scraper.js        ← جلب المقالات من Destructoid (Cheerio)
-│   ├── ai.js             ← توليد الكابشن (OpenAI)
+│   ├── scraper.js        ← جلب المقالات (RSS/HTML) مع fallback
+│   ├── ai.js             ← توليد المحتوى (Gemini/Groq) حسب المنصة/اللغة
+│   ├── imageGenerator.js ← توليد صور مبرندة (عنوان عربي/إنجليزي)
+│   ├── cloudinary.js     ← رفع الصورة إلى Cloudinary (لـ Instagram)
 │   ├── facebook.js       ← النشر على Facebook Graph API
-│   ├── instagram.js      ← النشر على Instagram Graph API
-│   ├── db.js             ← SQLite لمنع التكرار
+│   ├── instagram.js      ← النشر على Instagram Graph API (Container + Publish)
+│   ├── db.js             ← SQLite: حالة النشر لكل منصة + محاولات مستقلة
+│   ├── diagnose.js       ← أداة تشخيص الإعدادات
 │   └── logger.js         ← Winston Logger
 ├── data/
 │   └── published.db      ← (يُنشأ تلقائيًا)
@@ -37,105 +44,73 @@ npm install
 cp .env.example .env
 ```
 
----
+### 2️⃣ مزودات الذكاء الاصطناعي (Gemini / Groq)
 
-### 2️⃣ OpenAI API Key
+يدعم البوت مزودين مع fallback تلقائي (يمكن اختيار الأساسي عبر `AI_PROVIDER`):
 
-1. اذهب إلى: https://platform.openai.com/api-keys
-2. Create new secret key → انسخها
-3. في `.env`:
-   ```
-   OPENAI_API_KEY=sk-xxxx
-   OPENAI_MODEL=gpt-4o-mini    # الأرخص والأسرع
-   ```
+- **Gemini**: https://aistudio.google.com/app/apikey → `GEMINI_API_KEY`
+- **Groq**: https://console.groq.com → `GROQ_API_KEY`
 
----
-
-### 3️⃣ Facebook Page Access Token
-
-#### أ) إنشاء الـ App
-1. اذهب إلى: https://developers.facebook.com/
-2. **My Apps → Create App → Business**
-3. App Name: `Gaming Bot` → Create App
-
-#### ب) إضافة Pages API
-- من لوحة التحكم: **Add Product → Pages API**
-
-#### ج) الحصول على Access Token
-1. اذهب إلى: **Tools → Graph API Explorer**
-2. من القائمة العلوية، اختر **App** الخاصة بك
-3. اختر **User Token** → Add Permissions:
-   - ✅ `pages_manage_posts`
-   - ✅ `pages_read_engagement`
-   - ✅ `pages_show_list`
-4. انقر **Generate Access Token** → وافق على الأذونات
-5. **قم بتحويله لـ Long-Lived Token (60 يوم):**
-
-```bash
-# استبدل القيم بـ App ID و App Secret من Settings > Basic
-curl "https://graph.facebook.com/oauth/access_token\
-?grant_type=fb_exchange_token\
-&client_id={APP_ID}\
-&client_secret={APP_SECRET}\
-&fb_exchange_token={SHORT_USER_TOKEN}"
+في `.env`:
+```
+AI_PROVIDER=gemini
+GEMINI_API_KEY=...
+# GEMINI_MODEL=gemini-3.5-flash-lite
+GROQ_API_KEY=...
+# GROQ_MODEL=openai/gpt-oss-120b
 ```
 
-6. **احصل على Page Token الدائم:**
+> ملاحظة: يتم توليد محتوى مختلف لكل منصة (Facebook عربي قصير، Instagram إنجليزي أطول مع هاشتاغات/إيموجي).
 
-```bash
-curl "https://graph.facebook.com/me/accounts?access_token={LONG_LIVED_USER_TOKEN}"
-# ستجد في النتيجة: { "access_token": "...", "id": "PAGE_ID" }
-```
+### 3️⃣ Facebook Page Access Token (للنشر بالعربية)
 
-7. في `.env`:
+1. أنشئ/استخدم Facebook App مع **Pages API**.
+2. من **Graph API Explorer** احصل على صلاحيات: `pages_manage_posts`, `pages_read_engagement`, `pages_show_list`.
+3. حوّل التوكن إلى Long-Lived ثم احصل على **Page Access Token** عبر `/me/accounts`.
+4. في `.env`:
    ```
-   FACEBOOK_PAGE_ACCESS_TOKEN=EAAxxxx   # Page Token (وليس User Token)
+   FACEBOOK_PAGE_ACCESS_TOKEN=EAAxxxx
    FACEBOOK_PAGE_ID=123456789012345
+   # ENABLE_FACEBOOK=true
    ```
 
----
+### 4️⃣ Instagram Graph API (للنشر بالإنجليزية) + Cloudinary
 
-### 4️⃣ Instagram Graph API
+> Instagram Graph API يتطلب `image_url` عام (HTTPS). لذلك يستخدم البوت **Cloudinary** لرفع الصورة المبرندة المولّدة ثم نشرها على Instagram.
 
-> **شرط مسبق**: Instagram Business/Creator Account مربوط بـ Facebook Page
+**Instagram/Facebook:**
+- حساب Instagram يجب أن يكون Business/Creator ومربوطًا بصفحة Facebook.
+- صلاحيات مطلوبة: `instagram_basic`, `instagram_content_publish`, `pages_read_engagement`.
+- احصل على `INSTAGRAM_BUSINESS_ACCOUNT_ID` من: `GET /{page-id}?fields=instagram_business_account`
 
-#### أ) ربط الحسابات
-- في Instagram: Settings → Account → Switch to Professional Account
-- في Facebook Page: Settings → Instagram → Connect Account
+**Cloudinary:**
+- أنشئ حسابًا واحصل على `Cloud Name`, `API Key`, `API Secret`.
+- يرفع البوت الصور بمعرّف ثابت (deterministic `public_id`) مع `overwrite: true` لتجنّب تكرار الملفات عند إعادة المحاولة.
 
-#### ب) إضافة Instagram في الـ App
-- Facebook Developer App → **Add Product → Instagram Graph API**
+في `.env`:
+```
+INSTAGRAM_ACCESS_TOKEN=EAAxxxx   # يمكن أن يكون نفس Page Token إن كان صالحًا
+INSTAGRAM_BUSINESS_ACCOUNT_ID=17841400000000000
+# ENABLE_INSTAGRAM=true
 
-#### ج) Permissions
-في Graph API Explorer أضف:
-- ✅ `instagram_basic`
-- ✅ `instagram_content_publish`
-- ✅ `pages_read_engagement`
-
-#### د) الحصول على Instagram Business Account ID
-
-```bash
-# أولاً: احصل على Page ID
-curl "https://graph.facebook.com/me/accounts?access_token={PAGE_TOKEN}"
-
-# ثانياً: احصل على Instagram Account ID
-curl "https://graph.facebook.com/{PAGE_ID}?fields=instagram_business_account&access_token={PAGE_TOKEN}"
-# { "instagram_business_account": { "id": "17841400000000000" } }
+CLOUDINARY_CLOUD_NAME=...
+CLOUDINARY_API_KEY=...
+CLOUDINARY_API_SECRET=...
+CLOUDINARY_FOLDER=gaming-bot
 ```
 
-7. في `.env`:
-   ```
-   INSTAGRAM_ACCESS_TOKEN=EAAxxxx    # نفس Page Token
-   INSTAGRAM_BUSINESS_ACCOUNT_ID=17841400000000000
-   ```
+> لتشخيص الإعدادات: `node -r dotenv/config src/diagnose.js`
 
 ---
 
 ## 🚀 التشغيل
 
 ```bash
-# تشغيل عادي
+# تشغيل عادي (Cron محلي)
 npm start
+
+# تشغيل مرة واحدة (مناسب لـ GitHub Actions)
+node index.js --once
 
 # تشغيل في وضع التطوير (مع إعادة تشغيل تلقائي)
 npm run dev
@@ -143,11 +118,14 @@ npm run dev
 # اختبار الـ Scraper فقط
 npm run test:scraper
 
-# اختبار الـ AI Caption فقط
+# اختبار توليد المحتوى (Facebook عربي + Instagram إنجليزي)
 npm run test:caption
 
-# عرض آخر المقالات المنشورة
+# عرض آخر المقالات المنشورة وحالتها
 npm run status
+
+# تشخيص إعدادات Facebook/Instagram/Cloudinary
+node -r dotenv/config src/diagnose.js
 ```
 
 ---
@@ -156,57 +134,41 @@ npm run status
 
 | المتغير                | الافتراضي | الوصف                                                        |
 |------------------------|-----------|--------------------------------------------------------------|
-| `MAX_POSTS_PER_CYCLE`  | `2`       | أقصى عدد منشورات ناجحة في الدورة الواحدة (الباقي يُؤجَّل)      |
-| `MAX_PUBLISH_ATTEMPTS` | `3`       | بعد هذا العدد من محاولات النشر الفاشلة يُتخطّى الخبر نهائياً   |
-| `POST_DELAY_MS`        | `5000`    | فاصل زمني بين كل منشورين داخل الدورة (ملّي ثانية)             |
+| `MAX_POSTS_PER_CYCLE`  | `2`       | أقصى عدد **مقالات** تحقق نشرًا ناجحًا على منصة واحدة على الأقل في الدورة (مع محاولة كل المنصات المعلّقة لنفس المقال ضمن نفس الدورة) |
+| `MAX_PUBLISH_ATTEMPTS` | `3`       | عدد محاولات النشر الفاشلة **لكل منصة** لكل مقال قبل إيقاف إعادة المحاولة لتلك المنصة |
+| `POST_DELAY_MS`        | `5000`    | فاصل زمني بين عمليات النشر (ملّي ثانية)                     |
 | `MAX_ARTICLES`         | `10`      | عدد المقالات التي تُفحص في كل دورة                            |
+| `ENABLE_FACEBOOK`      | auto      | تفعيل/تعطيل Facebook (افتراضيًا: عند توفر بيانات الاعتماد)     |
+| `ENABLE_INSTAGRAM`     | auto      | تفعيل/تعطيل Instagram (افتراضيًا: عند توفر بيانات IG + Cloudinary) |
 
-> **ملاحظة:** لا يُسجَّل الخبر في قاعدة البيانات إلا بعد نجاح النشر فعلياً على منصّة واحدة على الأقل. الخبر الذي يفشل نشره يُعاد فحصه في الدورة التالية، وبعد بلوغ `MAX_PUBLISH_ATTEMPTS` يُتخطّى نهائياً لتجنّب إهدار طلبات الـ AI والـ API.
+> **سلوك الحالة/إعادة المحاولة:** يتم تتبع النجاح والمحاولات **لكل منصة** (`fb_ok`, `ig_ok`). إذا نجحت منصة وفشلت الأخرى، تُحفظ الحالة ويُعاد المحاولة للمنصة الفاشلة فقط في الدورات التالية.
 
 ---
 
-## 🔄 سير العمل
+## 🔄 سير العمل (مختصر)
 
 ```
-┌─────────────────┐
-│  Cron (15 min)  │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐    مكرر؟
-│ Scrape News     │──────────► تخطّي
-│ (Destructoid)   │
-└────────┬────────┘
-         │ جديد
-         ▼
-┌─────────────────┐
-│  OpenAI API     │
-│  توليد كابشن    │
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    ▼         ▼
-┌───────┐ ┌──────────┐
-│  FB   │ │    IG    │
-│ Page  │ │ Business │
-└───┬───┘ └────┬─────┘
-    │           │
-    ▼           ▼
-┌─────────────────────┐
-│  SQLite: حفظ الـ URL │
-└─────────────────────┘
+Cron / --once
+  -> Scrape articles
+  -> For each article (until MAX_POSTS_PER_CYCLE articles with >=1 successful publish):
+       - Determine pending platforms (enabled, not ok, attempts < MAX_PUBLISH_ATTEMPTS)
+       - Generate platform-specific content (AR for FB, EN+hashtags/emojis for IG)
+       - Generate branded image(s)
+       - IG: upload image buffer to Cloudinary (deterministic public_id, overwrite)
+       - Publish per platform, record per-platform success/failure
+       - Persist status in SQLite (partial progress kept)
 ```
 
 ---
 
-## ⚠️ حدود API
+## ⚠️ حدود وتنبيهات
 
-| الخدمة      | الحد                                    |
-|-------------|-----------------------------------------|
-| Facebook    | 200 نشرة/يوم للصفحة                     |
-| Instagram   | 25 نشرة/يوم                             |
-| OpenAI      | حسب خطتك (gpt-4o-mini رخيص جداً)        |
-| Destructoid | لا توجد قيود — نقرأ فقط                 |
+| الخدمة      | ملاحظات                                                                 |
+|-------------|-------------------------------------------------------------------------|
+| Facebook    | حدود نشر يومية حسب الصفحة/التطبيق؛ يجب تجديد التوكن عند انتهاء صلاحيته    |
+| Instagram   | حتى 25 منشور/يوم للحساب؛ الصورة يجب أن تكون رابط HTTPS عام؛ قد يستغرق تجهيز الحاوية وقتًا |
+| Cloudinary  | يُستخدم لاستضافة صور Instagram؛ البوت يعيد استخدام نفس `public_id` لتقليل التكرار |
+| AI Providers| Gemini/Groq لديهم حدود معدل واستهلاك؛ يوجد fallback تلقائي بين المزودين  |
 
 ---
 

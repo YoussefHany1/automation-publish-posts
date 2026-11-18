@@ -42,21 +42,56 @@ function drawImageCover(ctx, img, targetWidth, targetHeight) {
 }
 
 /**
+ * Breaks a single token into chunks that fit within maxWidth (fallback for long words).
+ */
+function breakLongWord(ctx, word, maxWidth) {
+  if (!word) return [""];
+  if (ctx.measureText(word).width <= maxWidth) return [word];
+  const chars = Array.from(word);
+  const parts = [];
+  let current = "";
+  for (const ch of chars) {
+    const test = current + ch;
+    if (current && ctx.measureText(test).width > maxWidth) {
+      parts.push(current);
+      current = ch;
+    } else {
+      current = test;
+    }
+  }
+  if (current) parts.push(current);
+  return parts.length ? parts : [word];
+}
+
+/**
  * Wraps text into lines based on the available width (Word Wrap)
+ * with a fallback for tokens longer than maxWidth.
  */
 function wrapText(ctx, text, maxWidth) {
-  const words = text.split(/\s+/);
+  const words = String(text || "").split(/\s+/).filter(Boolean);
   const lines = [];
   let currentLine = "";
 
   for (const word of words) {
-    const testLine = currentLine ? `${currentLine} ${word}` : word;
-    const metrics = ctx.measureText(testLine);
-    if (metrics.width > maxWidth && currentLine) {
-      lines.push(currentLine);
-      currentLine = word;
-    } else {
-      currentLine = testLine;
+    const pieces = breakLongWord(ctx, word, maxWidth);
+    for (let i = 0; i < pieces.length; i++) {
+      const piece = pieces[i];
+      if (!currentLine) {
+        currentLine = piece;
+        continue;
+      }
+      const testLine = `${currentLine} ${piece}`;
+      if (ctx.measureText(testLine).width > maxWidth) {
+        lines.push(currentLine);
+        currentLine = piece;
+      } else {
+        currentLine = testLine;
+      }
+      // if a word was broken, subsequent pieces should start new lines naturally
+      if (pieces.length > 1 && i < pieces.length - 1) {
+        lines.push(currentLine);
+        currentLine = "";
+      }
     }
   }
 
@@ -64,7 +99,7 @@ function wrapText(ctx, text, maxWidth) {
     lines.push(currentLine);
   }
 
-  return lines;
+  return lines.length ? lines : [""];
 }
 
 /**
@@ -170,6 +205,12 @@ async function generateNewsImage({ imageUrl, titleText }) {
     // Base direction: RTL if the text contains Arabic letters, otherwise LTR
     const hasArabic = /[\u0600-\u06FF]/.test(cleanText);
 
+    const isImportantEnglishToken = (token) => {
+      if (/[0-9]/.test(token)) return true; // numbers/digits
+      const letters = token.replace(/[^A-Za-z]/g, "");
+      return letters.length >= 2 && letters === letters.toUpperCase(); // ALL-CAPS words (e.g. GTA, DLC)
+    };
+
     ctx.font = `bold ${fontSize}px Cairo, sans-serif`;
     ctx.direction = hasArabic ? "rtl" : "ltr";
     ctx.lang = hasArabic ? "ar" : "en";
@@ -196,30 +237,45 @@ async function generateNewsImage({ imageUrl, titleText }) {
     lines.forEach((line, index) => {
       const lineY = firstLineY + index * lineHeight;
 
-      // Runs in logical order, then reversed visually in the Arabic case
-      // (the first logical run appears at the far right) — preserving
-      // word order inside each run, letting the engine handle BiDi within it.
-      let runs = splitRuns(line);
-      if (hasArabic) runs = runs.slice().reverse();
+      if (hasArabic) {
+        // Arabic/mixed headlines (Facebook): keep existing behavior unchanged
+        // Latin/numbers → blue, Arabic → white. Preserve BiDi-aware run rendering.
+        let runs = splitRuns(line);
+        runs = runs.slice().reverse();
 
-      const widths = runs.map((run) => {
-        ctx.direction = run.isLatin ? "ltr" : hasArabic ? "rtl" : "ltr";
-        return ctx.measureText(run.text).width;
-      });
+        const widths = runs.map((run) => {
+          ctx.direction = run.isLatin ? "ltr" : "rtl";
+          return ctx.measureText(run.text).width;
+        });
 
-      const totalWidth =
-        widths.reduce((a, b) => a + b, 0) + spaceWidth * (runs.length - 1);
+        const totalWidth =
+          widths.reduce((a, b) => a + b, 0) + spaceWidth * (runs.length - 1);
 
-      // Center the line block, then draw runs left-to-right in visual order
-      let x = (width - totalWidth) / 2;
+        let x = (width - totalWidth) / 2;
+        runs.forEach((run, i) => {
+          ctx.direction = run.isLatin ? "ltr" : "rtl";
+          ctx.fillStyle = run.isLatin ? "#6c9ef7" : "#FFFFFF";
+          ctx.fillText(run.text, x, lineY);
+          x += widths[i] + spaceWidth;
+        });
+      } else {
+        // English headlines (Instagram): main text white, important words/numbers blue
+        const tokens = line.split(/\s+/).filter(Boolean);
+        const widths = tokens.map((token) => {
+          ctx.direction = "ltr";
+          return ctx.measureText(token).width;
+        });
+        const totalWidth =
+          widths.reduce((a, b) => a + b, 0) + spaceWidth * Math.max(0, tokens.length - 1);
 
-      runs.forEach((run, i) => {
-        ctx.direction = run.isLatin ? "ltr" : hasArabic ? "rtl" : "ltr";
-        // Latin/numbers → #6c9ef7 | Arabic → white
-        ctx.fillStyle = run.isLatin ? "#6c9ef7" : "#FFFFFF";
-        ctx.fillText(run.text, x, lineY);
-        x += widths[i] + spaceWidth;
-      });
+        let x = (width - totalWidth) / 2;
+        ctx.direction = "ltr";
+        tokens.forEach((token, i) => {
+          ctx.fillStyle = isImportantEnglishToken(token) ? "#6c9ef7" : "#FFFFFF";
+          ctx.fillText(token, x, lineY);
+          x += widths[i] + spaceWidth;
+        });
+      }
     });
 
     // Reset the shadow

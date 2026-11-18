@@ -3,19 +3,20 @@
  */
 
 const cron = require("node-cron");
-const { scrapeLatestNews }  = require("./src/scraper");
-const { generateCaption }   = require("./src/ai");
+const { scrapeLatestNews } = require("./src/scraper");
+const { generateContent } = require("./src/ai");
 const { generateNewsImage } = require("./src/imageGenerator");
 const { publishToFacebook } = require("./src/facebook");
-// const { publishToInstagram }= require("./src/instagram");
+const { publishToInstagram } = require("./src/instagram");
+const { uploadImageBuffer } = require("./src/cloudinary");
 const {
-  isPublished,
-  markAsPublished,
-  getAttempts,
-  recordFailure,
-  clearAttempts,
   initDB,
   closeDB,
+  getArticleStatus,
+  markPlatformPublished,
+  getPlatformAttempts,
+  recordPlatformFailure,
+  clearPlatformAttempts,
 } = require("./src/db");
 const logger = require("./src/logger");
 
@@ -23,126 +24,221 @@ const logger = require("./src/logger");
 const RUN_ONCE = process.argv.includes("--once");
 
 // ─── Publishing behavior (configurable via .env) ──────────────────
-// Max successful posts per cycle (remaining are deferred to the next cycle)
+// Max distinct articles that achieve >=1 successful platform publish in this cycle
 const MAX_POSTS_PER_CYCLE = parseInt(process.env.MAX_POSTS_PER_CYCLE || "2", 10);
-// After this many failed publish attempts the article is skipped permanently
+// Per-platform failed publish attempts before giving up on that platform
 const MAX_PUBLISH_ATTEMPTS = parseInt(process.env.MAX_PUBLISH_ATTEMPTS || "3", 10);
-// Delay between posts within a cycle (milliseconds)
+// Delay between publish actions (milliseconds)
 const POST_DELAY_MS = parseInt(process.env.POST_DELAY_MS || "5000", 10);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/**
- * Processes a single article and attempts to publish it.
- * @returns {Promise<boolean>} true only if published on at least one platform
- */
-async function processArticle(article) {
-  const { title, summary, link, image } = article;
-  logger.info(`🔍 New article: ${title}`);
+function truthyEnv(v, defaultValue = true) {
+  if (v == null || v === "") return defaultValue;
+  return !/^(0|false|no|off)$/i.test(String(v).trim());
+}
 
-  let result;
-  try {
-    result = await generateCaption({ title, summary, link });
-  } catch (err) {
-    // Caption generation failure is transient (AI providers) — not counted as a publish failure
-    logger.error(`❌ Caption generation failed: ${err.message}`);
-    return false;
-  }
-
-  // Image headline (must include the game name) + post caption (no headline duplication)
-  const headline = (result.headline || title || "").trim();
-  let postedCaption = (result.caption || "").trim();
-  if (!postedCaption) postedCaption = summary || headline;
-
-  logger.info(`✍️  Headline: ${headline}`);
-  logger.info(`✍️  Caption:\n${postedCaption}`);
-
-  let imageBuffer = null;
-  try {
-    imageBuffer = await generateNewsImage({
-      imageUrl: image,
-      titleText: headline,
-    });
-    logger.info("🎨 Image generated successfully");
-  } catch (err) {
-    logger.warn(`⚠️ Failed to generate image: ${err.message}`);
-  }
-
-  const results = { facebook: false, instagram: false };
-  const errors = [];
-
-  try {
-    await publishToFacebook({ caption: postedCaption, imageBuffer, imageUrl: image, link });
-    results.facebook = true;
-    logger.info("✅ Published on Facebook");
-  } catch (err) {
-    logger.error(`❌ Facebook error: ${err.message}`);
-    errors.push(`Facebook: ${err.message}`);
-  }
-
-  // try {
-  //   await publishToInstagram({ caption, imageUrl: image });
-  //   results.instagram = true;
-  //   logger.info("✅ Published on Instagram");
-  // } catch (err) {
-  //   logger.error(`❌ Instagram error: ${err.message}`);
-  //   errors.push(`Instagram: ${err.message}`);
-  // }
-
-  // ─── Only save to the database after an actual successful publish ───
-  if (results.facebook || results.instagram) {
-    await markAsPublished(link, { title, caption: postedCaption, ...results });
-    await clearAttempts(link);
-    logger.info(`💾 Saved: ${link}`);
-    return true;
-  }
-
-  // Publish failed on all platforms — record the attempt and retry later
-  const attempts = await recordFailure(link, errors.join(" | "));
-  logger.warn(
-    `⚠️  Publish failed on all platforms (attempt ${attempts}/${MAX_PUBLISH_ATTEMPTS}) — not saved, will retry: ${link}`,
+function getEnabledPlatforms() {
+  const fbConfigured = !!(process.env.FACEBOOK_PAGE_ID && process.env.FACEBOOK_PAGE_ACCESS_TOKEN);
+  const igToken = process.env.INSTAGRAM_ACCESS_TOKEN || process.env.FACEBOOK_PAGE_ACCESS_TOKEN;
+  const igConfigured = !!(process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID && igToken);
+  const cloudinaryConfigured = !!(
+    process.env.CLOUDINARY_CLOUD_NAME &&
+    process.env.CLOUDINARY_API_KEY &&
+    process.env.CLOUDINARY_API_SECRET
   );
-  return false;
+
+  const platforms = [];
+  if (fbConfigured && truthyEnv(process.env.ENABLE_FACEBOOK, true)) platforms.push("facebook");
+  if (igConfigured && cloudinaryConfigured && truthyEnv(process.env.ENABLE_INSTAGRAM, true)) {
+    platforms.push("instagram");
+  } else if (igConfigured && !cloudinaryConfigured && truthyEnv(process.env.ENABLE_INSTAGRAM, true)) {
+    logger.warn("⚠️  Instagram is configured but Cloudinary is missing — Instagram publishing disabled (Option B requires Cloudinary).");
+  }
+
+  return platforms;
+}
+
+async function getPendingPlatforms(articleUrl, enabledPlatforms) {
+  const status = await getArticleStatus(articleUrl);
+  const pending = [];
+  for (const platform of enabledPlatforms) {
+    const ok = platform === "facebook" ? status.fb_ok : status.ig_ok;
+    if (ok) continue;
+    const attempts = await getPlatformAttempts(articleUrl, platform);
+    if (attempts >= MAX_PUBLISH_ATTEMPTS) continue;
+    pending.push(platform);
+  }
+  return { status, pending };
+}
+
+function fallbackContent(platform, article) {
+  const baseHeadline = String(article.title || "").trim();
+  const baseSummary = String(article.summary || "").trim();
+  return {
+    headline: baseHeadline,
+    caption: baseSummary || baseHeadline,
+    platform,
+  };
+}
+
+/**
+ * Processes a single article across all pending/enabled platforms.
+ * @returns {Promise<{ successCount: number, attempted: boolean }>}
+ */
+async function processArticle(article, enabledPlatforms) {
+  const { title, summary, link, image } = article;
+  const { status, pending } = await getPendingPlatforms(link, enabledPlatforms);
+
+  if (pending.length === 0) {
+    const anyEnabledOk = enabledPlatforms.some((p) => (p === "facebook" ? status.fb_ok : status.ig_ok));
+    const allEnabledDone = enabledPlatforms.every((p) => (p === "facebook" ? status.fb_ok : status.ig_ok));
+    if (allEnabledDone) {
+      logger.debug(`⏭️  Already published on all enabled platforms: ${link}`);
+    } else if (anyEnabledOk) {
+      logger.warn(`🚫 No pending platforms left (retries exhausted) for: ${link}`);
+    }
+    return { successCount: 0, attempted: false };
+  }
+
+  logger.info(`🔍 Processing: ${title}`);
+  logger.info(`   Pending platforms: ${pending.join(", ")}`);
+
+  // Generate content only for pending platforms
+  const contentByPlatform = {};
+  for (const platform of pending) {
+    try {
+      contentByPlatform[platform] = await generateContent({ title, summary, link }, { platform });
+    } catch (err) {
+      logger.error(`❌ ${platform} content generation failed: ${err.message}`);
+      contentByPlatform[platform] = null; // treated as transient; do not count as publish attempt
+    }
+  }
+
+  // Generate images/upload only for platforms with content
+  let fbImageBuffer = null;
+  let igImageUrl = null;
+
+  if (pending.includes("facebook") && contentByPlatform.facebook) {
+    const fbHeadline = (contentByPlatform.facebook.headline || title || "").trim();
+    try {
+      fbImageBuffer = await generateNewsImage({ imageUrl: image, titleText: fbHeadline });
+      logger.info("🎨 Facebook image generated");
+    } catch (err) {
+      logger.warn(`⚠️  Failed to generate Facebook image: ${err.message}`);
+    }
+  }
+
+  if (pending.includes("instagram") && contentByPlatform.instagram) {
+    const igHeadline = (contentByPlatform.instagram.headline || title || "").trim();
+    try {
+      const igBuffer = await generateNewsImage({ imageUrl: image, titleText: igHeadline });
+      logger.info("🎨 Instagram image generated");
+      const uploaded = await uploadImageBuffer(igBuffer, { articleUrl: link, platform: "instagram" });
+      igImageUrl = uploaded.secureUrl;
+    } catch (err) {
+      logger.error(`❌ Instagram image preparation/upload failed: ${err.message}`);
+      igImageUrl = null; // will cause IG attempt to fail below if content exists
+    }
+  }
+
+  let successCount = 0;
+  let attempted = false;
+
+  for (const platform of pending) {
+    const content = contentByPlatform[platform];
+    if (!content) {
+      logger.warn(`⏭️  Skipping ${platform} publish this cycle (content unavailable)`);
+      continue;
+    }
+
+    const headline = String(content.headline || title || "").trim();
+    let caption = String(content.caption || "").trim();
+    if (!caption) caption = String(summary || headline).trim();
+
+    if (platform === "facebook") logger.info(`✍️  [FB] Headline: ${headline}`);
+    if (platform === "instagram") logger.info(`✍️  [IG] Headline: ${headline}`);
+    logger.info(`✍️  [${platform}] Caption:\n${caption}`);
+
+    attempted = true;
+    try {
+      if (platform === "facebook") {
+        await publishToFacebook({ caption, imageBuffer: fbImageBuffer, imageUrl: image, link });
+      } else if (platform === "instagram") {
+        if (!igImageUrl) throw new Error("No public image URL available for Instagram (Cloudinary upload missing)");
+        await publishToInstagram({ caption, imageUrl: igImageUrl });
+      }
+
+      await markPlatformPublished(link, platform, { title, headline, caption });
+      await clearPlatformAttempts(link, platform);
+      successCount++;
+      logger.info(`✅ Published on ${platform}`);
+    } catch (err) {
+      const attempts = await recordPlatformFailure(link, platform, err.message);
+      logger.error(`❌ ${platform} publish failed (attempt ${attempts}/${MAX_PUBLISH_ATTEMPTS}): ${err.message}`);
+      if (attempts >= MAX_PUBLISH_ATTEMPTS) {
+        logger.warn(`🚫 ${platform} reached max attempts for: ${link}`);
+      }
+    }
+
+    // Delay between publish actions (including between platforms for same article)
+    await sleep(POST_DELAY_MS);
+  }
+
+  const after = await getArticleStatus(link);
+  logger.info(
+    `📌 Status ${link} -> facebook=${after.fb_ok ? "ok" : "pending"} instagram=${after.ig_ok ? "ok" : "pending"} (enabled: ${enabledPlatforms.join(",") || "none"})`,
+  );
+
+  return { successCount, attempted };
 }
 
 async function runBot() {
   logger.info("🤖 Bot started a new checking cycle...");
   try {
+    const enabledPlatforms = getEnabledPlatforms();
+    if (enabledPlatforms.length === 0) {
+      logger.warn("⚠️  No publishing platforms are enabled/configured. Check environment variables.");
+      return;
+    }
+    logger.info(`📣 Enabled platforms: ${enabledPlatforms.join(", ")}`);
+
     const articles = await scrapeLatestNews();
     logger.info(`📰 Found ${articles.length} articles`);
 
-    let posted = 0;
+    let articlesWithSuccess = 0;
 
     for (const article of articles) {
-      // Reached the per-cycle publish limit — defer remaining articles to the next cycle
-      if (posted >= MAX_POSTS_PER_CYCLE) {
+      if (articlesWithSuccess >= MAX_POSTS_PER_CYCLE) {
         logger.info(
-          `⏳ Cycle limit reached (${MAX_POSTS_PER_CYCLE}) — deferring remaining articles to next cycle`,
+          `⏳ Cycle limit reached (${MAX_POSTS_PER_CYCLE} articles with >=1 successful publish) — deferring remaining articles`,
         );
         break;
       }
 
-      if (await isPublished(article.link)) {
-        logger.debug(`⏭️  Skipping duplicate: ${article.link}`);
+      const { status, pending } = await getPendingPlatforms(article.link, enabledPlatforms);
+      const allDone = enabledPlatforms.every((p) => (p === "facebook" ? status.fb_ok : status.ig_ok));
+      if (allDone) {
+        logger.debug(`⏭️  Skipping (done on all enabled platforms): ${article.link}`);
+        continue;
+      }
+      if (pending.length === 0) {
+        logger.warn(`🚫 Skipping (no pending platforms / retries exhausted): ${article.link}`);
         continue;
       }
 
-      // Article exceeded the failed-attempt limit — skip it permanently
-      const attempts = await getAttempts(article.link);
-      if (attempts >= MAX_PUBLISH_ATTEMPTS) {
-        logger.warn(
-          `🚫 Skipping after ${attempts} failed attempts: ${article.link}`,
-        );
-        continue;
+      const result = await processArticle(article, enabledPlatforms);
+      if (result.successCount > 0) {
+        articlesWithSuccess++;
       }
 
-      const ok = await processArticle(article);
-      if (ok) posted++;
-
-      await sleep(POST_DELAY_MS);
+      // Small pause between articles to be gentle (publish actions already delayed)
+      if (!result.attempted) {
+        await sleep(500);
+      }
     }
 
-    logger.info(`📤 Posted ${posted}/${MAX_POSTS_PER_CYCLE} this cycle`);
+    logger.info(`📤 Cycle summary: ${articlesWithSuccess}/${MAX_POSTS_PER_CYCLE} article(s) had >=1 successful publish`);
   } catch (err) {
     logger.error(`💥 Error in runBot: ${err.message}`);
   }

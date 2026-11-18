@@ -9,9 +9,9 @@
  * The provider is selected via: AI_PROVIDER=gemini | groq
  * If the first provider fails, the next one is tried automatically (Fallback).
  *
- * ⚠️  generateCaption returns a structured object: { headline, caption }
- *     - headline: a short title for the image (must include the game name).
- *     - caption:  the full post text (without repeating the headline).
+ * Platform-aware generation:
+ *  - facebook: Arabic headline + short caption (FB style)
+ *  - instagram: English headline + longer caption (hashtags/emojis allowed)
  */
 
 const axios = require("axios");
@@ -21,10 +21,10 @@ const logger = require("./logger");
 const DEFAULT_PROVIDER = (process.env.AI_PROVIDER || "gemini").toLowerCase();
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Prompts (shared across all providers)
+//  Prompts
 // ═══════════════════════════════════════════════════════════════════════════
 
-const SYSTEM_PROMPT = `
+const SYSTEM_PROMPT_FB = `
 You are an expert Arabic gaming social media content creator. Your job is to convert English gaming news into concise, punchy Arabic content matching a very specific personal writing style.
 
 Return ONLY a valid JSON object (no markdown, no code fences, no extra text) with exactly these two string fields:
@@ -88,8 +88,62 @@ Example 10:
 {"headline": "عام 2025 يبدأ بإغلاق ثلاثة استوديوهات!", "caption": "وهذه الاستوديوهات هي:\n◾️ Freejam (Robocraft)\n◾️ Counterplay Games (Godfall)\n◾️ Toadman Interactive (Immortal: Unchained, Killing Floor, Dead Island)"}
 `.trim();
 
-function buildUserPrompt({ title, summary }) {
-  return `Convert the following English gaming news into the JSON format described above.
+const SYSTEM_PROMPT_IG = `
+You are an expert English gaming social media content creator for Instagram. Your job is to convert English gaming news into a clear, engaging headline and a longer Instagram caption.
+
+Return ONLY a valid JSON object (no markdown, no code fences, no extra text) with exactly these two string fields:
+
+{
+  "headline": "...",
+  "caption": "..."
+}
+
+### Field Rules:
+
+1. **"headline"** (the title drawn on the news image):
+   - A clear, specific, concise English title, at most about 70 characters.
+   - It MUST ALWAYS include the main game / entity name (game title, platform, or studio).
+   - Keep official game titles, platforms, and studios in their proper names/capitalization (e.g., GTA 6, The Last of Us Part III, Red Dead Redemption 2, Battlefield 6, Assassin's Creed Black Flag, PS5, PC, Roblox).
+   - No emojis. No hashtags. No URLs.
+
+2. **"caption"** (the Instagram post text):
+   - Write in English. Longer than a short news blurb: about 3 to 5 sentences (roughly 350–900 characters) giving useful context/details from the source.
+   - Engaging, informative, and credible. Do NOT repeat the headline as the first line.
+   - Emojis are allowed and encouraged in moderation where they fit naturally.
+   - Hashtags are allowed: include 3 to 8 relevant hashtags (e.g. game name, platform, #GamingNews) typically at the end.
+   - NO URLs. No "link in bio" prompts. No questions to the audience required.
+
+### Output Rules:
+- Return ONLY the JSON object.
+- No markdown, no code fences, no explanations, no labels.
+`.trim();
+
+const PLATFORM_CONFIG = {
+  facebook: {
+    systemPrompt: SYSTEM_PROMPT_FB,
+    userInstruction:
+      'Convert the following English gaming news into the JSON format described above for a Facebook post (Arabic). Return ONLY the JSON object with the "headline" and "caption" fields.',
+    maxOutputTokens: 500,
+    label: "Facebook (AR)",
+  },
+  instagram: {
+    systemPrompt: SYSTEM_PROMPT_IG,
+    userInstruction:
+      'Convert the following English gaming news into the JSON format described above for an Instagram post (English, longer caption with hashtags/emojis allowed). Return ONLY the JSON object with the "headline" and "caption" fields.',
+    maxOutputTokens: 900,
+    label: "Instagram (EN)",
+  },
+};
+
+function getPlatformConfig(platform) {
+  const cfg = PLATFORM_CONFIG[platform];
+  if (!cfg) throw new Error(`Unsupported platform: ${platform}`);
+  return cfg;
+}
+
+function buildUserPrompt({ title, summary }, platform = "facebook") {
+  const cfg = getPlatformConfig(platform);
+  return `${cfg.userInstruction}
 
 Title: ${title}
 Summary: ${summary || "No summary provided"}
@@ -139,14 +193,14 @@ function parseStructured(raw) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Provider 1: Google Gemini (free)
-//  Register at: https://aistudio.google.com/app/apikey
+//  Providers
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function callGemini({ title, summary }) {
+async function callGemini({ title, summary }, platform) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY Not found in .env");
 
+  const cfg = getPlatformConfig(platform);
   const model = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
@@ -154,18 +208,17 @@ async function callGemini({ title, summary }) {
     url,
     {
       system_instruction: {
-        parts: [{ text: SYSTEM_PROMPT }],
+        parts: [{ text: cfg.systemPrompt }],
       },
       contents: [
         {
           role: "user",
-          parts: [{ text: buildUserPrompt({ title, summary }) }],
+          parts: [{ text: buildUserPrompt({ title, summary }, platform) }],
         },
       ],
       generationConfig: {
-        maxOutputTokens: 500,
+        maxOutputTokens: cfg.maxOutputTokens,
         temperature: 0.85,
-        // Guaranteed JSON output from the provider
         responseMimeType: "application/json",
         responseSchema: {
           type: "OBJECT",
@@ -188,28 +241,23 @@ async function callGemini({ title, summary }) {
   return text;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Provider 2: Groq (free — fastest)
-//  Register at: https://console.groq.com → API Keys
-// ═══════════════════════════════════════════════════════════════════════════
-
-async function callGroq({ title, summary }) {
+async function callGroq({ title, summary }, platform) {
   const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) throw new Error("GROQ_API_KEY Not found in .env");
 
+  const cfg = getPlatformConfig(platform);
   const model = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 
   const { data } = await axios.post(
     "https://api.groq.com/openai/v1/chat/completions",
     {
       model,
-      max_tokens: 500,
+      max_tokens: cfg.maxOutputTokens,
       temperature: 0.85,
-      // Guaranteed JSON output from the provider
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: buildUserPrompt({ title, summary }) },
+        { role: "system", content: cfg.systemPrompt },
+        { role: "user", content: buildUserPrompt({ title, summary }, platform) },
       ],
     },
     {
@@ -240,16 +288,16 @@ function getFallbackOrder(primary) {
   return [primary, ...all.filter((p) => p !== primary)];
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  Main function — with automatic Retry + Fallback
-// ═══════════════════════════════════════════════════════════════════════════
-
 /**
- * Generates a structured headline and caption from article data.
- * @param {{ title: string, summary: string, link: string }} article
- * @returns {Promise<{ headline: string, caption: string }>}
+ * Generates platform-specific headline and caption from article data.
+ * @param {{ title: string, summary: string, link?: string }} article
+ * @param {{ platform?: 'facebook'|'instagram' }} [options]
+ * @returns {Promise<{ headline: string, caption: string, platform: string }>}
  */
-async function generateCaption({ title, summary, link }) {
+async function generateContent(article, options = {}) {
+  const platform = options.platform || "facebook";
+  getPlatformConfig(platform); // validate
+
   const order = getFallbackOrder(DEFAULT_PROVIDER);
   let lastError;
 
@@ -258,37 +306,39 @@ async function generateCaption({ title, summary, link }) {
     if (!provider) continue;
 
     try {
-      logger.info(`🤖 Generating caption using ${provider.label}...`);
-      const raw = await provider.fn({ title, summary });
+      logger.info(`🤖 Generating ${platform} content using ${provider.label}...`);
+      const raw = await provider.fn(article, platform);
       const result = parseStructured(raw);
 
       if (!result.headline && !result.caption) {
         throw new Error("Reply without headline/caption");
       }
 
-      logger.info(`✅ Caption ready (${provider.label})`);
-      return result;
+      logger.info(`✅ ${platform} content ready (${provider.label})`);
+      return { ...result, platform };
     } catch (err) {
       lastError = err;
       const status = err.response?.status;
 
       if (status === 429) {
-        logger.warn(
-          `⚠️  ${provider.label}: Rate limit exceeded (429) — trying next provider...`,
-        );
+        logger.warn(`⚠️  ${provider.label}: Rate limit exceeded (429) — trying next provider...`);
       } else if (status === 401 || status === 403) {
-        logger.warn(
-          `⚠️  ${provider.label}: Invalid key (${status}) — trying next provider...`,
-        );
+        logger.warn(`⚠️  ${provider.label}: Invalid key (${status}) — trying next provider...`);
       } else {
-        logger.warn(
-          `⚠️  ${provider.label}: ${err.message} — trying next provider...`,
-        );
+        logger.warn(`⚠️  ${provider.label}: ${err.message} — trying next provider...`);
       }
     }
   }
 
-  throw new Error(`All AI providers have failed: ${lastError?.message}`);
+  throw new Error(`All AI providers have failed (${platform}): ${lastError?.message}`);
 }
 
-module.exports = { generateCaption, parseStructured };
+/**
+ * Backward-compatible wrapper (defaults to Facebook/Arabic).
+ */
+async function generateCaption(article) {
+  const { headline, caption } = await generateContent(article, { platform: "facebook" });
+  return { headline, caption };
+}
+
+module.exports = { generateCaption, generateContent, parseStructured };
