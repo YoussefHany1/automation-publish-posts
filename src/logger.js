@@ -15,6 +15,13 @@ mkdirSync(LOG_DIR, { recursive: true });
 
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 
+// Disable ANSI colors in CI / non-interactive (GitHub Actions logs) to avoid
+// stray escape sequences like "[32minfo[39m" appearing in the run output.
+const useColors =
+  process.stdout.isTTY === true &&
+  !process.env.CI &&
+  !process.env.GITHUB_ACTIONS;
+
 // Custom print format
 const consoleFmt = printf(({ level, message, timestamp: ts }) => {
   return `${ts}  ${level.padEnd(7)} ${message}`;
@@ -30,7 +37,7 @@ const logger = createLogger({
     // ─── Console ─────────────────────────────────────
     new transports.Console({
       format: combine(
-        colorize({ all: true }),
+        ...(useColors ? [colorize({ all: true })] : []),
         timestamp({ format: "HH:mm:ss" }),
         consoleFmt
       ),

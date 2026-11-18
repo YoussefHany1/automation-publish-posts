@@ -12,6 +12,7 @@ const logger = require("./logger");
 
 const TARGET_URL = process.env.TARGET_URL || "https://www.destructoid.com/category/news/";
 const MAX_ARTICLES = parseInt(process.env.MAX_ARTICLES || "10", 10);
+const DETAIL_FETCH_CONCURRENCY = Math.max(1, parseInt(process.env.DETAIL_FETCH_CONCURRENCY || "4", 10));
 
 // Headers that mimic a real browser
 const HEADERS = {
@@ -23,6 +24,21 @@ const HEADERS = {
   "Accept-Language": "en-US,en;q=0.5",
   "Cache-Control": "no-cache",
 };
+
+async function mapWithConcurrency(items, limit, mapper) {
+  const list = Array.isArray(items) ? items : [];
+  const results = new Array(list.length);
+  let index = 0;
+  const workers = Array.from({ length: Math.min(limit, list.length || 1) }, async () => {
+    while (true) {
+      const i = index++;
+      if (i >= list.length) break;
+      results[i] = await mapper(list[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 // ─── Helpers ─────────────────────────────────────────────
 function stripHtml(html) {
@@ -128,6 +144,30 @@ function scrapeHtml(html) {
   return articles;
 }
 
+function needsEnrichment(article) {
+  return !article || !article.image || !article.summary;
+}
+
+async function enrichArticles(articles, options = {}) {
+  const list = Array.isArray(articles) ? articles : [];
+  const concurrency = Math.max(1, options.concurrency || DETAIL_FETCH_CONCURRENCY);
+  const shouldEnrich = typeof options.shouldEnrich === "function" ? options.shouldEnrich : needsEnrichment;
+
+  return mapWithConcurrency(list, concurrency, async (art) => {
+    if (!art) return art;
+    const { _needsDetails, ...rest } = art;
+    if (!shouldEnrich(rest, art)) return rest;
+
+    const details = await fetchArticleDetails(rest.link);
+    return {
+      title: rest.title,
+      summary: details.summary || rest.summary || "",
+      link: rest.link,
+      image: rest.image || details.image || null,
+    };
+  });
+}
+
 // ─── RSS XML parsing ─────────────────────────────────────
 function parseRssXml(xml) {
   const $ = cheerio.load(xml, { xmlMode: true });
@@ -231,7 +271,8 @@ async function tryRss2Json(feedUrl) {
 }
 
 // ─── Direct fetch ────────────────────────────────────────
-async function tryDirect(url) {
+async function tryDirect(url, options = {}) {
+  const { enrich = true, enrichConcurrency = DETAIL_FETCH_CONCURRENCY } = options;
   try {
     const { data } = await axios.get(url, {
       headers: HEADERS,
@@ -255,23 +296,10 @@ async function tryDirect(url) {
 
     // HTML scraping
     const scraped = scrapeHtml(data);
-    // Enrich with details (original behaviour) — fetch per article
-    const enriched = [];
-    for (const art of scraped) {
-      if (art._needsDetails) {
-        const details = await fetchArticleDetails(art.link);
-        enriched.push({
-          title: art.title,
-          summary: details.summary || art.summary,
-          link: art.link,
-          image: details.image || art.image,
-        });
-      } else {
-        const { _needsDetails, ...rest } = art;
-        enriched.push(rest);
-      }
+    if (!enrich) {
+      return scraped.map(({ _needsDetails, ...rest }) => rest);
     }
-    return enriched;
+    return enrichArticles(scraped, { concurrency: enrichConcurrency, shouldEnrich: () => true });
   } catch (err) {
     logger.warn(`Direct fetch failed: ${err.message}`);
     return null;
@@ -279,7 +307,8 @@ async function tryDirect(url) {
 }
 
 // ─── Main ────────────────────────────────────────────────
-async function scrapeLatestNews() {
+async function scrapeLatestNews(options = {}) {
+  const { enrich = true, enrichConcurrency = DETAIL_FETCH_CONCURRENCY } = options;
   logger.info(`🌐 Fetching: ${TARGET_URL}`);
 
   const isDestructoid = /destructoid\.com/i.test(TARGET_URL);
@@ -292,7 +321,7 @@ async function scrapeLatestNews() {
 
   let articles = null;
   if (!skipDirect) {
-    articles = await tryDirect(feedUrl);
+    articles = await tryDirect(feedUrl, { enrich, enrichConcurrency });
   }
 
   if (!articles || articles.length === 0) {
@@ -302,27 +331,13 @@ async function scrapeLatestNews() {
 
   // If still nothing and feedUrl != TARGET_URL, try original target
   if ((!articles || articles.length === 0) && feedUrl !== TARGET_URL) {
-    articles = await tryDirect(TARGET_URL);
+    articles = await tryDirect(TARGET_URL, { enrich, enrichConcurrency });
   }
 
   // Enrich missing images/summaries by fetching article pages
   // (works for accessible sites like insider-gaming; skipped for Destructoid)
-  if (!isDestructoid && Array.isArray(articles)) {
-    const enriched = [];
-    for (const art of articles) {
-      if (!art.image || !art.summary) {
-        const details = await fetchArticleDetails(art.link);
-        enriched.push({
-          title: art.title,
-          summary: details.summary || art.summary || "",
-          link: art.link,
-          image: art.image || details.image || null,
-        });
-      } else {
-        enriched.push(art);
-      }
-    }
-    articles = enriched;
+  if (enrich && !isDestructoid && Array.isArray(articles)) {
+    articles = await enrichArticles(articles, { concurrency: enrichConcurrency });
   }
 
   articles = (articles || []).slice(0, MAX_ARTICLES);
@@ -334,4 +349,4 @@ async function scrapeLatestNews() {
   return articles;
 }
 
-module.exports = { scrapeLatestNews };
+module.exports = { scrapeLatestNews, fetchArticleDetails, enrichArticles };

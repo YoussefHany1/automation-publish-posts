@@ -105,8 +105,10 @@ dist
 .DS_Store
 Thumbs.db
 
-# Database data
-data/published.db
-data/
+# Database data (persist published.db in git for GitHub Actions state; keep other data local)
+data/*
+!data/published.db
+!data/published.db-shm
+!data/published.db-wal
 
 src/diagnose.js

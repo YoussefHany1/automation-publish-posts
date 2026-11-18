@@ -3,7 +3,7 @@
  */
 
 const cron = require("node-cron");
-const { scrapeLatestNews } = require("./src/scraper");
+const { scrapeLatestNews, enrichArticles } = require("./src/scraper");
 const { generateContent } = require("./src/ai");
 const { generateNewsImage } = require("./src/imageGenerator");
 const { publishToFacebook } = require("./src/facebook");
@@ -20,6 +20,8 @@ const {
 } = require("./src/db");
 const logger = require("./src/logger");
 
+const DETAIL_FETCH_CONCURRENCY = Math.max(1, parseInt(process.env.DETAIL_FETCH_CONCURRENCY || "4", 10));
+
 // --once flag: run only once (for GitHub Actions)
 const RUN_ONCE = process.argv.includes("--once");
 
@@ -30,6 +32,11 @@ const MAX_POSTS_PER_CYCLE = parseInt(process.env.MAX_POSTS_PER_CYCLE || "2", 10)
 const MAX_PUBLISH_ATTEMPTS = parseInt(process.env.MAX_PUBLISH_ATTEMPTS || "3", 10);
 // Delay between publish actions (milliseconds)
 const POST_DELAY_MS = parseInt(process.env.POST_DELAY_MS || "5000", 10);
+
+// ─── Graceful shutdown state (cron/persistent mode) ──────────────────
+let activeRuns = 0;
+let shuttingDown = false;
+let cronTask = null;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -203,19 +210,13 @@ async function runBot() {
     }
     logger.info(`📣 Enabled platforms: ${enabledPlatforms.join(", ")}`);
 
-    const articles = await scrapeLatestNews();
-    logger.info(`📰 Found ${articles.length} articles`);
+    // 1) Scrape cheap metadata (no per-article detail fetches)
+    const rawArticles = await scrapeLatestNews({ enrich: false });
+    logger.info(`📰 Found ${rawArticles.length} articles (metadata)`);
 
-    let articlesWithSuccess = 0;
-
-    for (const article of articles) {
-      if (articlesWithSuccess >= MAX_POSTS_PER_CYCLE) {
-        logger.info(
-          `⏳ Cycle limit reached (${MAX_POSTS_PER_CYCLE} articles with >=1 successful publish) — deferring remaining articles`,
-        );
-        break;
-      }
-
+    // 2) Filter to articles with at least one pending enabled platform
+    const candidates = [];
+    for (const article of rawArticles) {
       const { status, pending } = await getPendingPlatforms(article.link, enabledPlatforms);
       const allDone = enabledPlatforms.every((p) => (p === "facebook" ? status.fb_ok : status.ig_ok));
       if (allDone) {
@@ -224,6 +225,51 @@ async function runBot() {
       }
       if (pending.length === 0) {
         logger.warn(`🚫 Skipping (no pending platforms / retries exhausted): ${article.link}`);
+        continue;
+      }
+      candidates.push({ ...article, _pending: pending });
+    }
+
+    // 3) Bounded concurrent enrichment only for pending candidates missing details
+    const toEnrich = candidates.filter((a) => !a.image || !a.summary);
+    let enrichedMap = new Map();
+    if (toEnrich.length > 0) {
+      logger.info(`🔎 Enriching ${toEnrich.length} pending article(s) (concurrency=${DETAIL_FETCH_CONCURRENCY})...`);
+      const enriched = await enrichArticles(toEnrich, {
+        concurrency: DETAIL_FETCH_CONCURRENCY,
+        shouldEnrich: (a) => !a.image || !a.summary,
+      });
+      enrichedMap = new Map(enriched.map((a) => [a.link, a]));
+    }
+
+    const prepared = candidates.map((a) => {
+      const e = enrichedMap.get(a.link);
+      const merged = e ? { ...a, ...e } : a;
+      // Final platform-aware eligibility: IG needs a publishable image URL after prep.
+      // Branded image generation can fall back without a source image; Cloudinary upload is validated during processing.
+      // FB can fall back (buffer/url/link) per publisher logic. So do not discard solely due to missing source image.
+      return merged;
+    });
+
+    let articlesWithSuccess = 0;
+
+    for (const article of prepared) {
+      if (shuttingDown) {
+        logger.info("🛑 Shutdown requested — stopping after current safe point (no new articles).");
+        break;
+      }
+
+      if (articlesWithSuccess >= MAX_POSTS_PER_CYCLE) {
+        logger.info(
+          `⏳ Cycle limit reached (${MAX_POSTS_PER_CYCLE} articles with >=1 successful publish) — deferring remaining articles`,
+        );
+        break;
+      }
+
+      // Re-check pending at processing time (state may have changed)
+      const { pending } = await getPendingPlatforms(article.link, enabledPlatforms);
+      if (pending.length === 0) {
+        logger.debug(`⏭️  Skipping (no pending platforms at processing time): ${article.link}`);
         continue;
       }
 
@@ -244,18 +290,79 @@ async function runBot() {
   }
 }
 
-(async () => {
-  await initDB();
-  logger.info(`🚀 Bot running (Mode: ${RUN_ONCE ? "Once" : "Cron"})`);
+async function guardedRun() {
+  if (shuttingDown) return;
+  activeRuns++;
+  try {
+    await runBot();
+  } catch (err) {
+    logger.error(`💥 Unexpected run error: ${err && err.message ? err.message : err}`);
+  } finally {
+    activeRuns--;
+    if (!RUN_ONCE && shuttingDown && activeRuns === 0) {
+      logger.info("🛑 Shutdown: in-flight work finished, closing DB...");
+      try { closeDB(); } catch {}
+      process.exit(0);
+    }
+  }
+}
 
-  await runBot();
+function initiateShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info(`🛑 Received ${signal}, shutting down gracefully...`);
+  if (cronTask && typeof cronTask.stop === "function") {
+    try {
+      cronTask.stop();
+    } catch (err) {
+      logger.warn(`Failed to stop cron task: ${err.message}`);
+    }
+  }
+  if (RUN_ONCE) {
+    // In --once mode, let the guarded run finish and the normal once-exit path handle cleanup.
+    logger.info("⏳ Waiting for current run to complete (--once mode)...");
+    return;
+  }
+  if (activeRuns === 0) {
+    closeDB();
+    process.exit(0);
+  } else {
+    logger.info("⏳ Waiting for in-flight run to complete before exit...");
+  }
+}
+
+process.on("SIGINT", () => initiateShutdown("SIGINT"));
+process.on("SIGTERM", () => initiateShutdown("SIGTERM"));
+process.on("SIGQUIT", () => initiateShutdown("SIGQUIT"));
+
+(async () => {
+  let fatal = null;
+  try {
+    await initDB();
+    logger.info(`🚀 Bot running (Mode: ${RUN_ONCE ? "Once" : "Cron"})`);
+    await guardedRun();
+  } catch (err) {
+    fatal = err;
+    logger.error(`💥 Fatal error: ${err && err.message ? err.message : err}`);
+  }
 
   if (RUN_ONCE) {
     logger.info("✅ Run finished — GitHub Actions mode");
-    closeDB();
-    process.exit(0);
+    try {
+      closeDB();
+    } catch (e) {
+      logger.error(`Failed to close DB: ${e.message}`);
+    }
+    process.exit(fatal ? 1 : 0);
   }
 
-  cron.schedule("*/15 * * * *", runBot);
+  if (fatal) {
+    try {
+      closeDB();
+    } catch {}
+    process.exit(1);
+  }
+
+  cronTask = cron.schedule("*/15 * * * *", guardedRun);
   logger.info("⏰ Cron scheduled every 15 minutes...");
 })();
