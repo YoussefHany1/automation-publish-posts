@@ -1,7 +1,7 @@
 /**
  * 📝 logger.js
  * ─────────────
- * Logger بسيط وملوّن باستخدام winston.
+ * Simple colored logger using winston.
  */
 
 const { createLogger, format, transports } = require("winston");
@@ -9,13 +9,13 @@ const { combine, timestamp, colorize, printf } = format;
 const path = require("path");
 const { mkdirSync } = require("fs");
 
-// إنشاء مجلد logs
+// Create the logs directory
 const LOG_DIR = path.join(__dirname, "..", "logs");
 mkdirSync(LOG_DIR, { recursive: true });
 
 const LOG_LEVEL = process.env.LOG_LEVEL || "info";
 
-// فورمات طباعة مخصص
+// Custom print format
 const consoleFmt = printf(({ level, message, timestamp: ts }) => {
   return `${ts}  ${level.padEnd(7)} ${message}`;
 });
@@ -27,7 +27,7 @@ const logger = createLogger({
     format.errors({ stack: true })
   ),
   transports: [
-    // ─── الطرفية ─────────────────────────────────────
+    // ─── Console ─────────────────────────────────────
     new transports.Console({
       format: combine(
         colorize({ all: true }),
@@ -35,14 +35,14 @@ const logger = createLogger({
         consoleFmt
       ),
     }),
-    // ─── ملف الأخطاء ─────────────────────────────────
+    // ─── Error file ─────────────────────────────────
     new transports.File({
       filename: path.join(LOG_DIR, "error.log"),
       level: "error",
       maxsize: 5 * 1024 * 1024,  // 5MB
       maxFiles: 3,
     }),
-    // ─── ملف كل شيء ──────────────────────────────────
+    // ─── All-logs file ──────────────────────────────────
     new transports.File({
       filename: path.join(LOG_DIR, "combined.log"),
       maxsize: 10 * 1024 * 1024, // 10MB

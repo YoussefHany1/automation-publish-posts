@@ -5,6 +5,11 @@ on:
     - cron: '*/15 * * * *'
   workflow_dispatch:
 
+# Prevents more than one instance running at a time (avoids push conflicts on published.db)
+concurrency:
+  group: gaming-bot-run
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -36,10 +41,13 @@ jobs:
           INSTAGRAM_BUSINESS_ACCOUNT_ID: ${{ secrets.INSTAGRAM_BUSINESS_ACCOUNT_ID }}
           TARGET_URL: ${{ secrets.TARGET_URL }}
           MAX_ARTICLES: ${{ secrets.MAX_ARTICLES }}
+          MAX_POSTS_PER_CYCLE: ${{ secrets.MAX_POSTS_PER_CYCLE || '2' }}
+          MAX_PUBLISH_ATTEMPTS: ${{ secrets.MAX_PUBLISH_ATTEMPTS || '3' }}
+          POST_DELAY_MS: ${{ secrets.POST_DELAY_MS || '5000' }}
           LOG_LEVEL: info
 
       - name: Commit Database Changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore: update published database"
-          file_pattern: "data/published.db data/published.db-wal data/published.db-shm"
+          file_pattern: "data/published.db*"

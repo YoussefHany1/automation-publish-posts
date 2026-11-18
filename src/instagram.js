@@ -1,30 +1,30 @@
 /**
  * 📸 instagram.js
  * ────────────────
- * ينشر صورة + كابشن على Instagram Business Account
- * باستخدام Instagram Graph API (Two-Step: Create → Publish)
+ * Publishes an image + caption to an Instagram Business Account
+ * using Instagram Graph API (Two-Step: Create → Publish)
  *
- * ─── خطوات الإعداد ──────────────────────────────────────
- * 1. تأكد أن حسابك Instagram نوعه Business أو Creator.
- * 2. اربطه بصفحة Facebook Page (من إعدادات Instagram).
- * 3. في Facebook Developer App (نفس الـ App):
+ * ─── Setup Steps ──────────────────────────────────────
+ * 1. Make sure your Instagram account is Business or Creator.
+ * 2. Link it to a Facebook Page (from Instagram settings).
+ * 3. In Facebook Developer App (same App):
  *    Add Product → Instagram Graph API
  * 4. Tools → Graph API Explorer:
- *    Permissions المطلوبة:
+ *    Required Permissions:
  *      • instagram_basic
  *      • instagram_content_publish
  *      • pages_read_engagement
- * 5. احصل على Instagram Business Account ID:
- *    GET /me/accounts → id هو Facebook Page ID
+ * 5. Get the Instagram Business Account ID:
+ *    GET /me/accounts → id is the Facebook Page ID
  *    GET /{page-id}?fields=instagram_business_account
- *    → instagram_business_account.id هو ما نحتاجه
- * 6. استخدم نفس Long-Lived Page Access Token من Facebook.
+ *    → instagram_business_account.id is what we need
+ * 6. Use the same Long-Lived Page Access Token as Facebook.
  *
- * ⚠️  قيود مهمة:
- *    - الصورة يجب أن تكون متاحة على URL عام (HTTPS).
- *    - لا يدعم GIF.
- *    - نسبة الأبعاد: 4:5 إلى 1.91:1 مقبولة.
- *    - حد 25 نشرة/يوم.
+ * ⚠️  Important limits:
+ *    - The image must be available at a public URL (HTTPS).
+ *    - GIF not supported.
+ *    - Aspect ratio: 4:5 to 1.91:1 accepted.
+ *    - Limit of 25 posts/day.
  * ────────────────────────────────────────────────────────
  */
 
@@ -36,10 +36,10 @@ const IG_ID = process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID;
 const TOKEN = process.env.INSTAGRAM_ACCESS_TOKEN;
 
 /**
- * ينشر صورة مع كابشن على Instagram.
- * يمرّ بخطوتين:
- *   1. إنشاء Container (media object)
- *   2. نشر الـ Container
+ * Publishes an image with a caption on Instagram.
+ * Goes through two steps:
+ *   1. Create a Container (media object)
+ *   2. Publish the Container
  *
  * @param {{ caption: string, imageUrl: string|null }} params
  */
@@ -55,14 +55,14 @@ async function publishToInstagram({ caption, imageUrl }) {
     return null;
   }
 
-  // ─── الخطوة 1: إنشاء Media Container ─────────────────
+  // ─── Step 1: Create Media Container ─────────────────
   const containerId = await createMediaContainer({ caption, imageUrl });
   logger.debug(`📦 Instagram container_id: ${containerId}`);
 
-  // ─── انتظر 3 ثوانٍ للمعالجة ──────────────────────────
+  // ─── Wait 3 seconds for processing ──────────────────────────
   await waitForContainerReady(containerId);
 
-  // ─── الخطوة 2: نشر الـ Container ──────────────────────
+  // ─── Step 2: Publish the Container ──────────────────────
   const publishId = await publishContainer(containerId);
   logger.debug(`📸 Instagram publish_id: ${publishId}`);
 
@@ -70,7 +70,7 @@ async function publishToInstagram({ caption, imageUrl }) {
 }
 
 /**
- * الخطوة 1: إنشاء الـ Container.
+ * Step 1: Create the Container.
  */
 async function createMediaContainer({ caption, imageUrl }) {
   const endpoint = `${BASE}/${IG_ID}/media`;
@@ -93,8 +93,8 @@ async function createMediaContainer({ caption, imageUrl }) {
 }
 
 /**
- * ينتظر حتى يصبح الـ Container جاهزاً للنشر.
- * يتحقق كل 3 ثوانٍ لمدة أقصاها 30 ثانية.
+ * Waits until the Container is ready to publish.
+ * Checks every 3 seconds for up to 30 seconds.
  */
 async function waitForContainerReady(containerId, maxWaitMs = 30000) {
   const interval = 3000;
@@ -124,7 +124,7 @@ async function waitForContainerReady(containerId, maxWaitMs = 30000) {
 }
 
 /**
- * الخطوة 2: نشر الـ Container.
+ * Step 2: Publish the Container.
  */
 async function publishContainer(containerId) {
   const endpoint = `${BASE}/${IG_ID}/media_publish`;

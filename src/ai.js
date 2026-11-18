@@ -1,105 +1,150 @@
-/**
+﻿/**
  * 🤖 ai.js — Multi-Provider AI Caption Generator
  * ─────────────────────────────────────────────────
- * يدعم 3 مزوّدين مجانيين بالترتيب التالي:
+ * Supports two free providers, in the following order:
  *
- *  1. Groq       ← الأسرع والأفضل مجاناً  (llama-3.3-70b)
- *  2. Gemini     ← مجاني بسخاء من Google  (gemini-1.5-flash)
- *  3. OpenAI     ← احتياطي (يحتاج بطاقة) (gpt-4o-mini)
+ *  1. Gemini  ← generous free tier from Google  (gemini-3.5-flash-lite)
+ *  2. Groq    ← fastest and best free tier  (openai/gpt-oss-120b)
  *
- * يُحدَّد المزوّد عبر: AI_PROVIDER=groq | gemini | openai
- * وإذا فشل المزوّد الأول يُجرَّب التالي تلقائياً (Fallback).
+ * The provider is selected via: AI_PROVIDER=gemini | groq
+ * If the first provider fails, the next one is tried automatically (Fallback).
+ *
+ * ⚠️  generateCaption returns a structured object: { headline, caption }
+ *     - headline: a short title for the image (must include the game name).
+ *     - caption:  the full post text (without repeating the headline).
  */
 
-const axios   = require("axios");
-const logger  = require("./logger");
+const axios = require("axios");
+const logger = require("./logger");
 
-// ─── اختيار المزوّد الافتراضي ─────────────────────────────────────────────
-const DEFAULT_PROVIDER = (process.env.AI_PROVIDER || "groq").toLowerCase();
+// ─── Default provider selection ─────────────────────────────────────────────
+const DEFAULT_PROVIDER = (process.env.AI_PROVIDER || "gemini").toLowerCase();
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Prompts (مشتركة بين كل المزوّدين)
+//  Prompts (shared across all providers)
 // ═══════════════════════════════════════════════════════════════════════════
 
 const SYSTEM_PROMPT = `
-أنت كاتب محتوى سوشال ميديا مصري بيتكلم بأسلوب طبيعي جدًا وعفوي، كأنك بتكلم صحابك مش بتكتب خبر رسمي. هيجيلك أخبار ألعاب بالإنجليزي — مهمتك تحولها لكابشن عربي باللهجة المصرية، خفيف، سريع، وفيه روح.
+You are an expert Arabic gaming social media content creator. Your job is to convert English gaming news into concise, punchy Arabic content matching a very specific personal writing style.
 
-**اشتراطات الإخراج:**
-- أخرج **الكابشن فقط** بدون أي مقدمة أو شرح.
-- ممنوع روابط أو هاشتاجات.
-- استخدم أسلوب: عنوان جذاب قصير، وبعده سطر أو سطرين شرح.
-- خليك بسيط وعفوي: استخدم تعبيرات زي (واضح إن، شكلها، الموضوع باين، الناس مش عاجبها، حلوة الصراحة، إلخ)
-- ينفع تضيف تعليق خفيف منك أو إحساس الناس، بس من غير مبالغة أو تأليف.
-- استخدم إيموجي بشكل خفيف ولطيف (:sweat_smile::confused::fire::upside_down::sleeping:) على حسب السياق.
-- خلي الكلام بشري وطبيعي، وابعد عن الصياغة الرسمية أو الروبوتية.
-- حافظ على الأرقام وأسماء الألعاب زي ما هي.
+Return ONLY a valid JSON object (no markdown, no code fences, no extra text) with exactly these two string fields:
 
-**شكل الكابشن:**
-عنوان بسيط!
-سطر شرح كده خفيف يوصل الفكرة بسرعة
+{
+  "headline": "...",
+  "caption": "..."
+}
 
-**المُدخل:** أخبار باللغة الإنجليزية  
-**المُخرج:** الكابشن العربي فقط بنفس الأسلوب ده
+### Field Rules:
+
+1. **"headline"** (the title drawn on the news image):
+   - A clear, specific, and concise title, at most about 70 characters.
+   - It MUST ALWAYS include the main game / entity name (the game title, platform, or studio).
+   - Keep major game titles, platforms, and consoles in English capitalized form (e.g., GTA 6, THE LAST OF US 3, RED DEAD REDEMPTION 2, BATTLEFIELD 6, ASSASSIN'S CREED BLACK FLAG, PS5, PC, ROBLOX).
+   - Arabic wording, natural and direct. No emojis. No hashtags. No URLs.
+
+2. **"caption"** (the full post text):
+   - The post body / details, WITHOUT repeating the headline.
+   - Short, focused, and punchy: 1 to 3 short lines/sentences.
+   - Modern, natural Arabic used by top gaming channels. Direct, exciting, and credible. Not overly colloquial street slang.
+   - Keep major game titles, platforms, and consoles in English capitalized form.
+   - If listing multiple studios/games/items, use clean bullet points with "◾️".
+   - Minimal and purposeful emojis (0 to 2 maximum). Never spam emojis.
+   - NO hashtags. NO URLs. NO intro greetings. NO commentary. NO questions to the audience.
+
+### Output Rules:
+- Return ONLY the JSON object.
+- No markdown, no code fences, no explanations, no labels.
+
+### Style Reference Examples:
+
+Example 1:
+{"headline": "نوتي دوج تعمل على THE LAST OF US 3", "caption": "لكنها لن تصدر قبل 2030 وليس قبل منتصف عمر PS6 🤔"}
+
+Example 2:
+{"headline": "دولة قطر تمنع لعبة ROBLOX", "caption": "بمزاعم تهديد سلامة الأطفال وأخلاقهم، وأيضاً للحفاظ على المراهقين من تعلم السلوكيات الضارة.."}
+
+Example 3:
+{"headline": "تسريبات: حصريات PS5 تصل إلى PC", "caption": "ستبدأ في الوصول بعد أشهر فقط من إطلاقها الأول"}
+
+Example 4:
+{"headline": "بيتا BATTLEFIELD 6 المفتوحة متاحة للجميع", "caption": "يمكن للجميع تجربتها الآن"}
+
+Example 5:
+{"headline": "RED DEAD REDEMPTION 2 تتجاوز 77 مليون نسخة", "caption": "تُعد الأكثر مبيعاً من حيث الإيرادات في السنوات السبع الأخيرة 🔥"}
+
+Example 6:
+{"headline": "GTA 6 لا يزال محدداً في 26 مايو 2026", "caption": "أكدت ROCKSTAR GAMES أن الموعد دون أي تغيير"}
+
+Example 7:
+{"headline": "سوني تلغي لعبتين خدماتيتين جديدتين", "caption": "ليصل مجموع ما تم إلغاؤه إلى 9 ألعاب من بداية الجيل\n◾️ إحداهما خدماتية في عالم God of War\n◾️ والأخرى كان يعمل عليها نفس استديو Days Gone.."}
+
+Example 8:
+{"headline": "توقعات: GTA 6 أول لعبة بسعر 100 دولار", "caption": "وستكون هي البداية لرفع أسعار الألعاب بعدها! 😶"}
+
+Example 9:
+{"headline": "ريميك ASSASSIN'S CREED BLACK FLAG قد يصدر في نوفمبر 2025", "caption": "أفضل أجزاء السلسلة قادمة من جديد 🔥"}
+
+Example 10:
+{"headline": "عام 2025 يبدأ بإغلاق ثلاثة استوديوهات!", "caption": "وهذه الاستوديوهات هي:\n◾️ Freejam (Robocraft)\n◾️ Counterplay Games (Godfall)\n◾️ Toadman Interactive (Immortal: Unchained, Killing Floor, Dead Island)"}
 `.trim();
 
 function buildUserPrompt({ title, summary }) {
-  return `اكتب كابشن سوشيال ميديا للخبر التالي:
+  return `Convert the following English gaming news into the JSON format described above.
 
-📰 العنوان: ${title}
+Title: ${title}
+Summary: ${summary || "No summary provided"}
 
-📝 الملخص: ${summary || "لا يوجد ملخص"}
-
-المصدر: Destructoid Gaming News`;
+Return ONLY the JSON object with the "headline" and "caption" fields.`;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  المزوّد 1: Groq (مجاني — الأسرع)
-//  سجّل على: https://console.groq.com → API Keys
-//  الحد المجاني: 14,400 طلب/يوم | 6,000 token/دقيقة
-// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * Parses a provider's reply and returns a structured { headline, caption } object.
+ * Tolerates replies wrapped in markdown fences, with a fallback to plain text.
+ * @param {string} raw
+ * @returns {{ headline: string, caption: string }}
+ */
+function parseStructured(raw) {
+  const text = String(raw || "").trim();
+  if (!text) throw new Error("رد فارغ من مزوّد الـ AI");
 
-async function callGroq({ title, summary }) {
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) throw new Error("GROQ_API_KEY غير موجود في .env");
+  // Strip markdown fences if present
+  const cleaned = text
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
 
-  const model = process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
-
-  const { data } = await axios.post(
-    "https://api.groq.com/openai/v1/chat/completions",
-    {
-      model,
-      max_tokens: 400,
-      temperature: 0.85,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user",   content: buildUserPrompt({ title, summary }) },
-      ],
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 20000,
+  // Extract the first JSON object
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) {
+    try {
+      const obj = JSON.parse(cleaned.slice(start, end + 1));
+      const headline = String(obj.headline || "").trim();
+      const caption = String(obj.caption || "").trim();
+      if (headline || caption) return { headline, caption };
+    } catch (e) {
+      // Ignore the error and fall back below
     }
-  );
+  }
 
-  const text = data.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new Error("Groq: رد فارغ");
-  return text;
+  // fallback: treat the text as a plain caption (first line = headline)
+  const lines = cleaned.split("\n").map((l) => l.trim()).filter(Boolean);
+  return {
+    headline: lines[0] || "",
+    caption: lines.slice(1).join("\n") || cleaned,
+  };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  المزوّد 2: Google Gemini (مجاني)
-//  سجّل على: https://aistudio.google.com/app/apikey
-//  الحد المجاني: 1,500 طلب/يوم | 1,000,000 token/يوم
+//  Provider 1: Google Gemini (free)
+//  Register at: https://aistudio.google.com/app/apikey
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function callGemini({ title, summary }) {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) throw new Error("GEMINI_API_KEY غير موجود في .env");
 
-  const model = process.env.GEMINI_MODEL || "gemini-1.5-flash";
+  const model = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
   const { data } = await axios.post(
@@ -115,14 +160,24 @@ async function callGemini({ title, summary }) {
         },
       ],
       generationConfig: {
-        maxOutputTokens: 400,
+        maxOutputTokens: 500,
         temperature: 0.85,
+        // Guaranteed JSON output from the provider
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            headline: { type: "STRING" },
+            caption: { type: "STRING" },
+          },
+          required: ["headline", "caption"],
+        },
       },
     },
     {
       headers: { "Content-Type": "application/json" },
-      timeout: 20000,
-    }
+      timeout: 25000,
+    },
   );
 
   const text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
@@ -131,25 +186,27 @@ async function callGemini({ title, summary }) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  المزوّد 3: OpenAI (احتياطي — يحتاج بطاقة)
-//  سجّل على: https://platform.openai.com/api-keys
+//  Provider 2: Groq (free — fastest)
+//  Register at: https://console.groq.com → API Keys
 // ═══════════════════════════════════════════════════════════════════════════
 
-async function callOpenAI({ title, summary }) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) throw new Error("OPENAI_API_KEY غير موجود في .env");
+async function callGroq({ title, summary }) {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) throw new Error("GROQ_API_KEY غير موجود في .env");
 
-  const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
+  const model = process.env.GROQ_MODEL || "openai/gpt-oss-120b";
 
   const { data } = await axios.post(
-    "https://api.openai.com/v1/chat/completions",
+    "https://api.groq.com/openai/v1/chat/completions",
     {
       model,
-      max_tokens: 400,
+      max_tokens: 500,
       temperature: 0.85,
+      // Guaranteed JSON output from the provider
+      response_format: { type: "json_object" },
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
-        { role: "user",   content: buildUserPrompt({ title, summary }) },
+        { role: "user", content: buildUserPrompt({ title, summary }) },
       ],
     },
     {
@@ -157,38 +214,37 @@ async function callOpenAI({ title, summary }) {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      timeout: 20000,
-    }
+      timeout: 25000,
+    },
   );
 
   const text = data.choices?.[0]?.message?.content?.trim();
-  if (!text) throw new Error("OpenAI: رد فارغ");
+  if (!text) throw new Error("Groq: رد فارغ");
   return text;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  خريطة المزوّدين + ترتيب الـ Fallback
+//  Provider map + Fallback order
 // ═══════════════════════════════════════════════════════════════════════════
 
 const PROVIDERS = {
-  groq:   { fn: callGroq,   label: "Groq (llama-3.3-70b)" },
-  gemini: { fn: callGemini, label: "Gemini 1.5 Flash"      },
-  openai: { fn: callOpenAI, label: "OpenAI gpt-4o-mini"    },
+  gemini: { fn: callGemini, label: "Gemini" },
+  groq: { fn: callGroq, label: "Groq" },
 };
 
 function getFallbackOrder(primary) {
-  const all = ["groq", "gemini", "openai"];
+  const all = ["gemini", "groq"];
   return [primary, ...all.filter((p) => p !== primary)];
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  الدالة الرئيسية — مع Retry + Fallback تلقائي
+//  Main function — with automatic Retry + Fallback
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * يولّد كابشن سوشيال ميديا من بيانات المقال.
+ * Generates a structured headline and caption from article data.
  * @param {{ title: string, summary: string, link: string }} article
- * @returns {Promise<string>} الكابشن الجاهز
+ * @returns {Promise<{ headline: string, caption: string }>}
  */
 async function generateCaption({ title, summary, link }) {
   const order = getFallbackOrder(DEFAULT_PROVIDER);
@@ -200,23 +256,31 @@ async function generateCaption({ title, summary, link }) {
 
     try {
       logger.info(`🤖 Generating caption using ${provider.label}...`);
-      const caption = await provider.fn({ title, summary });
+      const raw = await provider.fn({ title, summary });
+      const result = parseStructured(raw);
 
-      const final = caption
+      if (!result.headline && !result.caption) {
+        throw new Error("رد بدون headline/caption");
+      }
 
       logger.info(`✅ Caption ready (${provider.label})`);
-      return final;
-
+      return result;
     } catch (err) {
       lastError = err;
       const status = err.response?.status;
 
       if (status === 429) {
-        logger.warn(`⚠️  ${provider.label}: Rate limit exceeded (429) — trying next provider...`);
+        logger.warn(
+          `⚠️  ${provider.label}: Rate limit exceeded (429) — trying next provider...`,
+        );
       } else if (status === 401 || status === 403) {
-        logger.warn(`⚠️  ${provider.label}: Invalid key (${status}) — trying next provider...`);
+        logger.warn(
+          `⚠️  ${provider.label}: Invalid key (${status}) — trying next provider...`,
+        );
       } else {
-        logger.warn(`⚠️  ${provider.label}: ${err.message} — trying next provider...`);
+        logger.warn(
+          `⚠️  ${provider.label}: ${err.message} — trying next provider...`,
+        );
       }
     }
   }
@@ -224,4 +288,4 @@ async function generateCaption({ title, summary, link }) {
   throw new Error(`فشلت جميع مزوّدي الـ AI: ${lastError?.message}`);
 }
 
-module.exports = { generateCaption };
+module.exports = { generateCaption, parseStructured };

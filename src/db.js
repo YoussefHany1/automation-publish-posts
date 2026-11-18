@@ -1,8 +1,8 @@
 /**
  * 💾 db.js
  * ─────────
- * قاعدة بيانات SQLite خفيفة لتخزين الروابط المنشورة
- * وتجنّب التكرار — مجانية وتعمل بدون server.
+ * Lightweight SQLite database for storing published links
+ * and avoiding duplicates — free and serverless.
  */
 
 const Database = require("better-sqlite3");
@@ -13,16 +13,16 @@ const DB_PATH = path.join(__dirname, "..", "data", "published.db");
 let db;
 
 /**
- * تهيئة قاعدة البيانات وإنشاء الجدول إذا لم يكن موجوداً.
+ * Initializes the database and creates the table if it does not exist.
  */
 async function initDB() {
-  // إنشاء مجلد data إذا لم يكن موجوداً
+  // Create the data directory if it does not exist
   const { mkdirSync } = require("fs");
   mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
   db = new Database(DB_PATH);
 
-  // WAL mode: أداء أفضل في القراءة/الكتابة المتزامنة
+  // WAL mode: better performance for concurrent read/write
   db.pragma("journal_mode = WAL");
 
   db.exec(`
@@ -37,13 +37,21 @@ async function initDB() {
     );
 
     CREATE INDEX IF NOT EXISTS idx_url ON published_articles(url);
+
+    -- Track failed publish attempts per link to avoid retrying forever
+    CREATE TABLE IF NOT EXISTS article_attempts (
+      url         TEXT PRIMARY KEY,
+      attempts    INTEGER NOT NULL DEFAULT 0,
+      last_error  TEXT,
+      updated_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   logger.info(`💾 DB ready: ${DB_PATH}`);
 }
 
 /**
- * يتحقق إذا كان الرابط منشوراً من قبل.
+ * Checks whether a URL has been published before.
  * @param {string} url
  * @returns {boolean}
  */
@@ -58,7 +66,7 @@ async function isPublished(url) {
 }
 
 /**
- * يسجّل الخبر كـ "منشور".
+ * Records an article as "published".
  * @param {string} url
  * @param {{ title?: string, caption?: string, facebook?: boolean, instagram?: boolean }} meta
  */
@@ -78,7 +86,56 @@ async function markAsPublished(url, meta = {}) {
 }
 
 /**
- * يُعيد آخر N مقالات منشورة (مفيد للـ debugging).
+ * Returns the number of failed publish attempts for a given URL (0 if none).
+ * @param {string} url
+ * @returns {number}
+ */
+async function getAttempts(url) {
+  if (!db) throw new Error("DB غير مُهيَّأة — استدعِ initDB() أولاً");
+
+  const row = db
+    .prepare("SELECT attempts FROM article_attempts WHERE url = ?")
+    .get(url);
+
+  return row ? row.attempts : 0;
+}
+
+/**
+ * Records a failed publish attempt for a URL (increments the counter by 1).
+ * @param {string} url
+ * @param {string} [error] Last error message
+ * @returns {number} Number of attempts after the increment
+ */
+async function recordFailure(url, error = "") {
+  if (!db) throw new Error("DB غير مُهيَّأة — استدعِ initDB() أولاً");
+
+  db.prepare(`
+    INSERT INTO article_attempts (url, attempts, last_error, updated_at)
+    VALUES (?, 1, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(url) DO UPDATE SET
+      attempts   = attempts + 1,
+      last_error = excluded.last_error,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(url, String(error).slice(0, 500));
+
+  const row = db
+    .prepare("SELECT attempts FROM article_attempts WHERE url = ?")
+    .get(url);
+
+  return row ? row.attempts : 0;
+}
+
+/**
+ * Deletes the attempt record for a URL (called after a successful publish).
+ * @param {string} url
+ */
+async function clearAttempts(url) {
+  if (!db) throw new Error("DB غير مُهيَّأة — استدعِ initDB() أولاً");
+  db.prepare("DELETE FROM article_attempts WHERE url = ?").run(url);
+}
+
+/**
+ * Returns the last N published articles (useful for debugging).
  * @param {number} limit
  */
 function getRecentPublished(limit = 20) {
@@ -91,13 +148,32 @@ function getRecentPublished(limit = 20) {
 }
 
 /**
- * يُغلق الاتصال بقاعدة البيانات.
+ * Closes the database connection.
  */
 function closeDB() {
   if (db) {
+    // Merge all transactions into the main file and truncate WAL files before closing.
+    // Important in GitHub Actions where the DB is committed to Git — prevents
+    // conflicts/corruption of the temporary files (published.db-wal / published.db-shm).
+    try {
+      const result = db.pragma("wal_checkpoint(TRUNCATE)");
+      logger.debug(`🧹 WAL checkpoint: ${JSON.stringify(result)}`);
+    } catch (err) {
+      logger.warn(`⚠️ فشل wal_checkpoint قبل الإغلاق: ${err.message}`);
+    }
+
     db.close();
     logger.info("🔌 DB closed");
   }
 }
 
-module.exports = { initDB, isPublished, markAsPublished, getRecentPublished, closeDB };
+module.exports = {
+  initDB,
+  isPublished,
+  markAsPublished,
+  getAttempts,
+  recordFailure,
+  clearAttempts,
+  getRecentPublished,
+  closeDB,
+};
