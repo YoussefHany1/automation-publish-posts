@@ -56,11 +56,35 @@ function getEnabledPlatforms() {
   );
 
   const platforms = [];
-  if (fbConfigured && truthyEnv(process.env.ENABLE_FACEBOOK, true)) platforms.push("facebook");
-  if (igConfigured && cloudinaryConfigured && truthyEnv(process.env.ENABLE_INSTAGRAM, true)) {
-    platforms.push("instagram");
-  } else if (igConfigured && !cloudinaryConfigured && truthyEnv(process.env.ENABLE_INSTAGRAM, true)) {
-    logger.warn("⚠️  Instagram is configured but Cloudinary is missing — Instagram publishing disabled (Option B requires Cloudinary).");
+
+  if (fbConfigured && truthyEnv(process.env.ENABLE_FACEBOOK, true)) {
+    platforms.push("facebook");
+  } else if (truthyEnv(process.env.ENABLE_FACEBOOK, true)) {
+    const missingFb = [];
+    if (!process.env.FACEBOOK_PAGE_ID) missingFb.push("FACEBOOK_PAGE_ID");
+    if (!process.env.FACEBOOK_PAGE_ACCESS_TOKEN) missingFb.push("FACEBOOK_PAGE_ACCESS_TOKEN");
+    if (missingFb.length) {
+      logger.warn(`⚠️  Facebook enabled but not configured (missing: ${missingFb.join(", ")}).`);
+    }
+  }
+
+  if (truthyEnv(process.env.ENABLE_INSTAGRAM, true)) {
+    const missingIg = [];
+    if (!process.env.INSTAGRAM_BUSINESS_ACCOUNT_ID) missingIg.push("INSTAGRAM_BUSINESS_ACCOUNT_ID");
+    if (!igToken) missingIg.push("INSTAGRAM_ACCESS_TOKEN (or FACEBOOK_PAGE_ACCESS_TOKEN fallback)");
+    const missingCloud = [];
+    if (!process.env.CLOUDINARY_CLOUD_NAME) missingCloud.push("CLOUDINARY_CLOUD_NAME");
+    if (!process.env.CLOUDINARY_API_KEY) missingCloud.push("CLOUDINARY_API_KEY");
+    if (!process.env.CLOUDINARY_API_SECRET) missingCloud.push("CLOUDINARY_API_SECRET");
+
+    if (igConfigured && cloudinaryConfigured) {
+      platforms.push("instagram");
+    } else if (missingIg.length || missingCloud.length) {
+      const parts = [];
+      if (missingIg.length) parts.push(`Instagram creds missing: ${missingIg.join(", ")}`);
+      if (missingCloud.length) parts.push(`Cloudinary missing: ${missingCloud.join(", ")}`);
+      logger.warn(`⚠️  Instagram enabled but unavailable (${parts.join(" | ")}).`);
+    }
   }
 
   return platforms;
