@@ -3,13 +3,13 @@
 A Node.js bot that scrapes gaming news, generates platform-specific captions with AI, creates branded images, and publishes to **Facebook** and **Instagram** with per-platform state tracking and retries.
 
 - **Facebook:** Arabic headline + short caption (existing FB post style)
-- **Instagram:** English headline + longer caption (hashtags/emojis allowed), published using a Cloudinary-hosted branded image URL
+- **Instagram:** English headline + longer caption (hashtags/emojis allowed), published as a carousel (branded news image + configurable extra slide) using Cloudinary-hosted public image URLs
 
 ## Features
 
 - **Multi-platform publishing**
   - Facebook (Arabic content)
-  - Instagram (English content, two-step Graph API publish flow with container status polling)
+  - Instagram (English content, Graph API publish flow with container status polling; supports carousel posts with an extra fixed slide)
 - **Platform-aware AI generation**
   - Primary/fallback providers: **Gemini** and **Groq** (configurable)
   - Structured JSON output parsing with logging, corrective retry for malformed/truncated responses, and safe fallback behavior
@@ -99,13 +99,14 @@ Copy from [`.env.example`](.env.example) and adjust as needed.
 | `INSTAGRAM_ACCESS_TOKEN` | Instagram Graph API token (falls back to `FACEBOOK_PAGE_ACCESS_TOKEN` if unset) | - |
 | `INSTAGRAM_BUSINESS_ACCOUNT_ID` | Instagram Business/Creator account ID | - |
 | `ENABLE_INSTAGRAM` | Enable/disable Instagram publishing | auto/enabled when configured |
+| `INSTAGRAM_CAROUSEL_IMAGE` | Optional extra slide for every Instagram post (local path or HTTPS URL). Set to `none`/`false` to disable. | `assets/downloadGZen.png` if present |
 | `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name (**required for Instagram**) | - |
 | `CLOUDINARY_API_KEY` | Cloudinary API key (**required for Instagram**) | - |
 | `CLOUDINARY_API_SECRET` | Cloudinary API secret (**required for Instagram**) | - |
 | `CLOUDINARY_FOLDER` | Cloudinary folder for uploads | `gaming-bot` |
 | `CLOUDINARY_TAG` | Optional Cloudinary tag (supported by upload logic) | `gaming-bot` (code default) |
 
-> Instagram publishing requires a public HTTPS `image_url`; this project uploads the generated branded image to Cloudinary and publishes that URL.
+> Instagram publishing requires public HTTPS image URLs. The bot uploads the generated branded news image to Cloudinary; if an extra carousel image is configured/available, it uploads/resolves it and publishes an Instagram carousel (news image + extra slide).
 
 ### Scraper / bot behavior
 | Variable | Description | Default |

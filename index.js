@@ -8,7 +8,7 @@ const { generateContent } = require("./src/ai");
 const { generateNewsImage } = require("./src/imageGenerator");
 const { publishToFacebook } = require("./src/facebook");
 const { publishToInstagram } = require("./src/instagram");
-const { uploadImageBuffer } = require("./src/cloudinary");
+const { uploadImageBuffer, uploadStaticImageBuffer } = require("./src/cloudinary");
 const {
   initDB,
   closeDB,
@@ -18,9 +18,13 @@ const {
   recordPlatformFailure,
   clearPlatformAttempts,
 } = require("./src/db");
+const fs = require("fs");
+const path = require("path");
 const logger = require("./src/logger");
 
 const DETAIL_FETCH_CONCURRENCY = Math.max(1, parseInt(process.env.DETAIL_FETCH_CONCURRENCY || "4", 10));
+const INSTAGRAM_CAROUSEL_IMAGE = (process.env.INSTAGRAM_CAROUSEL_IMAGE || "").trim();
+let cachedInstagramExtraImageUrl = null;
 
 // --once flag: run only once (for GitHub Actions)
 const RUN_ONCE = process.argv.includes("--once");
@@ -113,6 +117,57 @@ function fallbackContent(platform, article) {
   };
 }
 
+function getInstagramCarouselImageConfig() {
+  const raw = INSTAGRAM_CAROUSEL_IMAGE;
+  if (raw && /^(0|false|no|off|none)$/i.test(raw)) return { disabled: true };
+  if (raw) return { value: raw };
+
+  const defaultPath = path.join(__dirname, "assets", "downloadGZen.png");
+  if (fs.existsSync(defaultPath)) return { value: defaultPath, isDefault: true };
+  return { disabled: true };
+}
+
+async function resolveInstagramExtraImageUrl() {
+  if (cachedInstagramExtraImageUrl) return cachedInstagramExtraImageUrl;
+
+  const cfg = getInstagramCarouselImageConfig();
+  if (cfg.disabled) return null;
+
+  const value = cfg.value;
+  if (/^https:\/\//i.test(value)) {
+    cachedInstagramExtraImageUrl = value;
+    logger.info(`🖼️  Instagram carousel extra image: using configured URL`);
+    return cachedInstagramExtraImageUrl;
+  }
+
+  const filePath = path.isAbsolute(value) ? value : path.join(__dirname, value);
+  if (!fs.existsSync(filePath)) {
+    logger.warn(`⚠️  Instagram carousel extra image not found: ${filePath} (skipping extra slide)`);
+    return null;
+  }
+
+  try {
+    const buffer = fs.readFileSync(filePath);
+    const keyBase = path.basename(filePath, path.extname(filePath)) || "instagram_extra";
+    const ext = path.extname(filePath).toLowerCase();
+    const contentType =
+      ext === ".jpg" || ext === ".jpeg" ? "image/jpeg" :
+      ext === ".webp" ? "image/webp" :
+      "image/png";
+    const uploaded = await uploadStaticImageBuffer(buffer, {
+      key: keyBase,
+      filename: path.basename(filePath),
+      contentType,
+    });
+    cachedInstagramExtraImageUrl = uploaded.secureUrl;
+    logger.info(`🖼️  Instagram carousel extra image ready (${cfg.isDefault ? "default asset" : "configured file"}): ${path.basename(filePath)}`);
+    return cachedInstagramExtraImageUrl;
+  } catch (err) {
+    logger.warn(`⚠️  Failed to prepare Instagram carousel extra image: ${err.message} (skipping extra slide)`);
+    return null;
+  }
+}
+
 /**
  * Processes a single article across all pending/enabled platforms.
  * @returns {Promise<{ successCount: number, attempted: boolean }>}
@@ -149,6 +204,7 @@ async function processArticle(article, enabledPlatforms) {
   // Generate images/upload only for platforms with content
   let fbImageBuffer = null;
   let igImageUrl = null;
+  let igExtraImageUrl = null;
 
   if (pending.includes("facebook") && contentByPlatform.facebook) {
     const fbHeadline = (contentByPlatform.facebook.headline || title || "").trim();
@@ -170,6 +226,10 @@ async function processArticle(article, enabledPlatforms) {
     } catch (err) {
       logger.error(`❌ Instagram image preparation/upload failed: ${err.message}`);
       igImageUrl = null; // will cause IG attempt to fail below if content exists
+    }
+
+    if (igImageUrl) {
+      igExtraImageUrl = await resolveInstagramExtraImageUrl();
     }
   }
 
@@ -197,7 +257,8 @@ async function processArticle(article, enabledPlatforms) {
         await publishToFacebook({ caption, imageBuffer: fbImageBuffer, imageUrl: image, link });
       } else if (platform === "instagram") {
         if (!igImageUrl) throw new Error("No public image URL available for Instagram (Cloudinary upload missing)");
-        await publishToInstagram({ caption, imageUrl: igImageUrl });
+        const igImageUrls = igExtraImageUrl ? [igImageUrl, igExtraImageUrl] : [igImageUrl];
+        await publishToInstagram({ caption, imageUrls: igImageUrls });
       }
 
       await markPlatformPublished(link, platform, { title, headline, caption });

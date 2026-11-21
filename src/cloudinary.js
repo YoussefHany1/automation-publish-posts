@@ -38,39 +38,30 @@ function signParams(paramsToSign, apiSecret) {
   return crypto.createHash("sha1").update(toSign + apiSecret).digest("hex");
 }
 
-/**
- * Uploads an image buffer to Cloudinary using a deterministic public_id.
- * Retries overwrite the same asset to avoid duplicate storage usage.
- *
- * @param {Buffer} buffer
- * @param {{ articleUrl: string, platform?: string }} options
- * @returns {Promise<{ url: string, secureUrl: string, publicId: string }>}
- */
-async function uploadImageBuffer(buffer, { articleUrl, platform = "instagram" } = {}) {
-  if (!buffer) throw new Error("uploadImageBuffer: image buffer is required");
-  if (!articleUrl) throw new Error("uploadImageBuffer: articleUrl is required for deterministic public_id");
+async function uploadBufferToCloudinary(buffer, { publicId, tags, filename = "image.png", contentType = "image/png" } = {}) {
+  if (!buffer) throw new Error("Cloudinary upload: image buffer is required");
+  if (!publicId) throw new Error("Cloudinary upload: publicId is required");
 
-  const { cloudName, apiKey, apiSecret, folder, tag } = getCloudinaryConfig();
-  const publicIdBase = deterministicPublicId(articleUrl, platform);
-  const publicId = folder ? `${folder}/${publicIdBase}` : publicIdBase;
+  const { cloudName, apiKey, apiSecret, tag } = getCloudinaryConfig();
+  const finalTags = tags || tag;
   const timestamp = Math.floor(Date.now() / 1000);
 
   const paramsToSign = {
     overwrite: "true",
     public_id: publicId,
-    tags: tag,
+    tags: finalTags,
     timestamp,
   };
   const signature = signParams(paramsToSign, apiSecret);
 
   const form = new FormData();
-  form.append("file", buffer, { filename: `${publicIdBase}.png`, contentType: "image/png" });
+  form.append("file", buffer, { filename, contentType });
   form.append("api_key", apiKey);
   form.append("timestamp", String(timestamp));
   form.append("signature", signature);
   form.append("public_id", publicId);
   form.append("overwrite", "true");
-  form.append("tags", tag);
+  form.append("tags", finalTags);
 
   const endpoint = `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`;
 
@@ -99,4 +90,47 @@ async function uploadImageBuffer(buffer, { articleUrl, platform = "instagram" } 
   }
 }
 
-module.exports = { uploadImageBuffer, deterministicPublicId };
+/**
+ * Uploads an image buffer to Cloudinary using a deterministic public_id.
+ * Retries overwrite the same asset to avoid duplicate storage usage.
+ *
+ * @param {Buffer} buffer
+ * @param {{ articleUrl: string, platform?: string }} options
+ * @returns {Promise<{ url: string, secureUrl: string, publicId: string }>}
+ */
+async function uploadImageBuffer(buffer, { articleUrl, platform = "instagram" } = {}) {
+  if (!articleUrl) throw new Error("uploadImageBuffer: articleUrl is required for deterministic public_id");
+
+  const { folder } = getCloudinaryConfig();
+  const publicIdBase = deterministicPublicId(articleUrl, platform);
+  const publicId = folder ? `${folder}/${publicIdBase}` : publicIdBase;
+
+  return uploadBufferToCloudinary(buffer, {
+    publicId,
+    filename: `${publicIdBase}.png`,
+    contentType: "image/png",
+  });
+}
+
+/**
+ * Uploads a static/fixed image buffer to Cloudinary under a stable public_id.
+ * Useful for assets that are reused across posts (e.g. Instagram carousel extra slide).
+ *
+ * @param {Buffer} buffer
+ * @param {{ key: string, folder?: string, tags?: string, filename?: string, contentType?: string }} options
+ */
+async function uploadStaticImageBuffer(buffer, { key, folder, tags, filename, contentType } = {}) {
+  if (!key) throw new Error("uploadStaticImageBuffer: key is required");
+  const cfg = getCloudinaryConfig();
+  const finalFolder = folder != null ? String(folder).trim() : cfg.folder;
+  const safeKey = String(key).trim().replace(/[^a-zA-Z0-9_-]/g, "_");
+  const publicId = finalFolder ? `${finalFolder}/static_${safeKey}` : `static_${safeKey}`;
+  return uploadBufferToCloudinary(buffer, {
+    publicId,
+    tags: tags || cfg.tag,
+    filename: filename || `${safeKey}.png`,
+    contentType: contentType || "image/png",
+  });
+}
+
+module.exports = { uploadImageBuffer, uploadStaticImageBuffer, deterministicPublicId };

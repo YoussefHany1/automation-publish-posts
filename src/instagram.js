@@ -60,11 +60,37 @@ function wrapInstagramError(err, context) {
   return e;
 }
 
+function normalizeImageUrls({ imageUrl, imageUrls } = {}) {
+  const raw = Array.isArray(imageUrls) && imageUrls.length ? imageUrls : [imageUrl];
+  const urls = raw
+    .map((u) => String(u || "").trim())
+    .filter(Boolean);
+
+  const deduped = [];
+  for (const u of urls) {
+    if (!deduped.includes(u)) deduped.push(u);
+  }
+
+  for (const u of deduped) {
+    if (!/^https:\/\//i.test(u)) {
+      throw new Error(`Instagram image URL must be public HTTPS: ${u}`);
+    }
+  }
+
+  if (deduped.length === 0) {
+    throw new Error("Instagram publish requires at least one public imageUrl (HTTPS)");
+  }
+  if (deduped.length > 10) {
+    throw new Error(`Instagram carousel supports max 10 images (got ${deduped.length})`);
+  }
+  return deduped;
+}
+
 /**
- * Publishes an image with a caption on Instagram.
- * @param {{ caption: string, imageUrl: string }} params
+ * Publishes an image or carousel with a caption on Instagram.
+ * @param {{ caption: string, imageUrl?: string, imageUrls?: string[] }} params
  */
-async function publishToInstagram({ caption, imageUrl }) {
+async function publishToInstagram({ caption, imageUrl, imageUrls }) {
   const { igId, token } = getInstagramConfig();
   if (!igId || !token) {
     throw new Error(
@@ -72,13 +98,26 @@ async function publishToInstagram({ caption, imageUrl }) {
     );
   }
 
-  if (!imageUrl) {
-    throw new Error("Instagram publish requires a public imageUrl (HTTPS)");
-  }
+  const urls = normalizeImageUrls({ imageUrl, imageUrls });
 
   try {
-    const containerId = await createMediaContainer({ igId, token, caption, imageUrl });
-    logger.debug(`📦 Instagram container_id: ${containerId}`);
+    let containerId;
+    if (urls.length === 1) {
+      containerId = await createMediaContainer({ igId, token, caption, imageUrl: urls[0] });
+      logger.debug(`📦 Instagram container_id: ${containerId}`);
+    } else {
+      logger.info(`🎞️  Publishing Instagram carousel (${urls.length} images)`);
+      const childIds = [];
+      for (let i = 0; i < urls.length; i++) {
+        const childId = await createCarouselItemContainer({ igId, token, imageUrl: urls[i] });
+        logger.debug(`📦 Instagram carousel child ${i + 1}/${urls.length}: ${childId}`);
+        await waitForContainerReady(childId, token);
+        childIds.push(childId);
+      }
+
+      containerId = await createCarouselContainer({ igId, token, caption, children: childIds });
+      logger.debug(`📦 Instagram carousel container_id: ${containerId}`);
+    }
 
     await waitForContainerReady(containerId, token);
 
@@ -86,7 +125,7 @@ async function publishToInstagram({ caption, imageUrl }) {
     logger.debug(`📸 Instagram publish_id: ${publishId}`);
     return publishId;
   } catch (err) {
-    const wrapped = wrapInstagramError(err, "publish");
+    const wrapped = wrapInstagramError(err, urls.length > 1 ? "carousel publish" : "publish");
     if (wrapped.code === "IG_TOKEN_EXPIRED") {
       logger.error("════════════════════════════════════════════════════════════");
       logger.error("🚨 Instagram access token expired or was revoked!");
@@ -118,6 +157,53 @@ async function createMediaContainer({ igId, token, caption, imageUrl }) {
     return data.id;
   } catch (err) {
     throw wrapInstagramError(err, "container creation");
+  }
+}
+
+async function createCarouselItemContainer({ igId, token, imageUrl }) {
+  const endpoint = `${BASE}/${igId}/media`;
+
+  try {
+    const { data } = await axios.post(
+      endpoint,
+      {
+        image_url: imageUrl,
+        is_carousel_item: true,
+        access_token: token,
+      },
+      { timeout: 30000 },
+    );
+
+    if (!data.id) {
+      throw new Error(`No carousel item container id in response: ${JSON.stringify(data)}`);
+    }
+    return data.id;
+  } catch (err) {
+    throw wrapInstagramError(err, "carousel item creation");
+  }
+}
+
+async function createCarouselContainer({ igId, token, caption, children }) {
+  const endpoint = `${BASE}/${igId}/media`;
+
+  try {
+    const { data } = await axios.post(
+      endpoint,
+      {
+        media_type: "CAROUSEL",
+        children: Array.isArray(children) ? children.join(",") : String(children),
+        caption: caption,
+        access_token: token,
+      },
+      { timeout: 30000 },
+    );
+
+    if (!data.id) {
+      throw new Error(`No carousel container id in response: ${JSON.stringify(data)}`);
+    }
+    return data.id;
+  } catch (err) {
+    throw wrapInstagramError(err, "carousel container creation");
   }
 }
 
